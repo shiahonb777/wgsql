@@ -44,43 +44,85 @@ fn cmd_selftest() -> Result<()> {
     let engine = wgsql::Engine::new()?;
     println!("GPU: {:?} / {}", engine.adapter_info.backend, engine.adapter_info.name);
     println!();
+    println!("=== single-aggregate (SUM only) ===");
     println!("{:>10}  {:>8}  {:>10}  {:>10}  {:>10}  {:>8}",
              "n", "groups", "cpu_time", "gpu_time", "gpu_M/s", "speedup");
-
     for &(n, n_groups) in &[
         (1_000_000usize, 1024usize),
         (1_000_000, 100_000),
         (10_000_000, 1024),
         (10_000_000, 1_000_000),
     ] {
-        let mut x: u32 = 0xCAFEBABE;
-        let mut next = || -> u32 {
-            x ^= x << 13; x ^= x >> 17; x ^= x << 5; x
-        };
-        let keys: Vec<i32> = (0..n).map(|_| (next() % n_groups as u32) as i32).collect();
-        let values: Vec<i32> = (0..n).map(|_| (next() % 1000) as i32).collect();
-
-        // CPU baseline: HashMap. Single-thread reference.
-        let t_cpu = Instant::now();
-        let mut acc: HashMap<i32, i64> = HashMap::with_capacity(n_groups * 2);
-        for (k, v) in keys.iter().zip(values.iter()) {
-            *acc.entry(*k).or_insert(0) += *v as i64;
-        }
-        let cpu_dur = t_cpu.elapsed();
-
-        let t_gpu = Instant::now();
-        let result = engine.group_by_sum_i32_with_opts(
-            &keys, &values,
-            wgsql::GroupByOptions { estimated_distinct: Some(n_groups) },
-        )?;
-        let gpu_dur = t_gpu.elapsed();
-        let gpu_throughput = (n as f64) / gpu_dur.as_secs_f64();
-        let speedup = cpu_dur.as_secs_f64() / gpu_dur.as_secs_f64();
-        println!(
-            "{:>10}  {:>8}  {:>9.2?}  {:>9.2?}  {:>8.1}M  {:>7.2}x",
-            n, result.len(), cpu_dur, gpu_dur,
-            gpu_throughput / 1e6, speedup,
-        );
+        run_groupby_bench(&engine, n, n_groups)?;
     }
+    println!();
+    println!("=== multi-aggregate (SUM + COUNT + MIN + MAX in one pass) ===");
+    println!("{:>10}  {:>8}  {:>10}  {:>10}  {:>10}  {:>8}",
+             "n", "groups", "cpu_time", "gpu_time", "gpu_M/s", "speedup");
+    for &(n, n_groups) in &[
+        (1_000_000usize, 1024usize),
+        (10_000_000, 1_000_000),
+    ] {
+        run_agg_bench(&engine, n, n_groups)?;
+    }
+    Ok(())
+}
+
+fn run_groupby_bench(engine: &wgsql::Engine, n: usize, n_groups: usize) -> Result<()> {
+    use std::collections::HashMap;
+    use std::time::Instant;
+    let mut x: u32 = 0xCAFEBABE;
+    let mut next = || -> u32 { x ^= x << 13; x ^= x >> 17; x ^= x << 5; x };
+    let keys: Vec<i32> = (0..n).map(|_| (next() % n_groups as u32) as i32).collect();
+    let values: Vec<i32> = (0..n).map(|_| (next() % 1000) as i32).collect();
+
+    let t = Instant::now();
+    let mut acc: HashMap<i32, i64> = HashMap::with_capacity(n_groups * 2);
+    for (k, v) in keys.iter().zip(values.iter()) {
+        *acc.entry(*k).or_insert(0) += *v as i64;
+    }
+    let cpu = t.elapsed();
+
+    let t = Instant::now();
+    let result = engine.group_by_sum_i32_with_opts(
+        &keys, &values, wgsql::GroupByOptions { estimated_distinct: Some(n_groups) },
+    )?;
+    let gpu = t.elapsed();
+    let speedup = cpu.as_secs_f64() / gpu.as_secs_f64();
+    println!("{:>10}  {:>8}  {:>9.2?}  {:>9.2?}  {:>8.1}M  {:>7.2}x",
+             n, result.len(), cpu, gpu, (n as f64 / gpu.as_secs_f64()) / 1e6, speedup);
+    Ok(())
+}
+
+fn run_agg_bench(engine: &wgsql::Engine, n: usize, n_groups: usize) -> Result<()> {
+    use std::collections::HashMap;
+    use std::time::Instant;
+    let mut x: u32 = 0xCAFEBABE;
+    let mut next = || -> u32 { x ^= x << 13; x ^= x >> 17; x ^= x << 5; x };
+    let keys: Vec<i32> = (0..n).map(|_| (next() % n_groups as u32) as i32).collect();
+    let values: Vec<i32> = (0..n).map(|_| (next() % 1000) as i32).collect();
+
+    // CPU baseline: same single-pass HashMap, but with 4 aggregates.
+    let t = Instant::now();
+    struct Slot { sum: i64, count: u64, min: i32, max: i32 }
+    let mut acc: HashMap<i32, Slot> = HashMap::with_capacity(n_groups * 2);
+    for (k, v) in keys.iter().zip(values.iter()) {
+        acc.entry(*k)
+            .and_modify(|s| {
+                s.sum += *v as i64; s.count += 1;
+                s.min = s.min.min(*v); s.max = s.max.max(*v);
+            })
+            .or_insert(Slot { sum: *v as i64, count: 1, min: *v, max: *v });
+    }
+    let cpu = t.elapsed();
+
+    let t = Instant::now();
+    let result = engine.agg_i32(
+        &keys, &values, wgsql::GroupByOptions { estimated_distinct: Some(n_groups) },
+    )?;
+    let gpu = t.elapsed();
+    let speedup = cpu.as_secs_f64() / gpu.as_secs_f64();
+    println!("{:>10}  {:>8}  {:>9.2?}  {:>9.2?}  {:>8.1}M  {:>7.2}x",
+             n, result.len(), cpu, gpu, (n as f64 / gpu.as_secs_f64()) / 1e6, speedup);
     Ok(())
 }

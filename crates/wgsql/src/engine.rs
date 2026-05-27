@@ -41,6 +41,16 @@ pub struct GroupBySumResult {
     pub sum: i64,
 }
 
+/// One row of a multi-aggregate result. SUM/COUNT/MIN/MAX in one pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AggResult {
+    pub key: i32,
+    pub sum: i64,
+    pub count: u64,
+    pub min: i32,
+    pub max: i32,
+}
+
 /// The engine owns a wgpu Device + Queue and a precompiled pipeline.
 /// Reuse a single Engine across many queries to amortize the device
 /// initialization (~50–200ms on first construction).
@@ -54,6 +64,9 @@ pub struct Engine {
     /// on browser WebGPU.
     clear_pipeline: wgpu::ComputePipeline,
     clear_bgl: wgpu::BindGroupLayout,
+    /// Multi-aggregate pipeline (SUM, COUNT, MIN, MAX in one pass).
+    agg_pipeline: wgpu::ComputePipeline,
+    agg_bgl: wgpu::BindGroupLayout,
     pub adapter_info: wgpu::AdapterInfo,
 }
 
@@ -86,6 +99,7 @@ struct ClearUniforms {
 
 const SHADER: &str = include_str!("group_by_sum_i32.wgsl");
 const CLEAR_SHADER: &str = include_str!("clear_i32.wgsl");
+const AGG_SHADER: &str = include_str!("agg_i32.wgsl");
 const WORKGROUP_SIZE: u32 = 64;
 
 impl Engine {
@@ -112,7 +126,10 @@ impl Engine {
                 &wgpu::DeviceDescriptor {
                     label: Some("wgsql-device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    // We require at least 8 storage buffers per stage
+                    // (WebGPU spec floor; downlevel_defaults caps at 4
+                    // which isn't enough for the multi-aggregate kernel).
+                    required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
@@ -200,6 +217,47 @@ impl Engine {
             cache: None,
         });
 
+        // ---- agg_i32 kernel: SUM/COUNT/MIN/MAX in one pass.
+        let agg_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("agg_i32"),
+            source: wgpu::ShaderSource::Wgsl(AGG_SHADER.into()),
+        });
+        let agg_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("agg_i32-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                Self::storage_layout_entry(1, true),  // keys
+                Self::storage_layout_entry(2, true),  // values
+                Self::storage_layout_entry(3, false), // slot_keys
+                Self::storage_layout_entry(4, false), // slot_sums
+                Self::storage_layout_entry(5, false), // slot_counts
+                Self::storage_layout_entry(6, false), // slot_mins
+                Self::storage_layout_entry(7, false), // slot_maxs
+            ],
+        });
+        let agg_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("agg_i32-pl"),
+            bind_group_layouts: &[&agg_bgl],
+            push_constant_ranges: &[],
+        });
+        let agg_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("agg_i32-pipe"),
+            layout: Some(&agg_pl),
+            module: &agg_shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         Ok(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
@@ -207,6 +265,8 @@ impl Engine {
             bind_group_layout,
             clear_pipeline,
             clear_bgl,
+            agg_pipeline,
+            agg_bgl,
             adapter_info,
         })
     }
@@ -450,6 +510,214 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+
+    /// Multi-aggregate GROUP BY: SUM, COUNT, MIN, MAX in one pass.
+    ///
+    /// Same shape as `group_by_sum_i32_with_opts_async` but reads four
+    /// aggregates per group from a single shared kernel — what GPU OLAP
+    /// is built for. CPU has to scan four times (or build one Map but
+    /// with branches per aggregate); GPU does all four in the same
+    /// memory transaction.
+    pub async fn agg_i32_async(
+        &self,
+        keys: &[i32],
+        values: &[i32],
+        opts: GroupByOptions,
+    ) -> Result<Vec<AggResult>, EngineError> {
+        if keys.len() != values.len() {
+            return Err(EngineError::LengthMismatch {
+                keys: keys.len(),
+                values: values.len(),
+            });
+        }
+        let n = keys.len();
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        if n > u32::MAX as usize {
+            return Err(EngineError::InputTooLarge(n));
+        }
+        let cap_seed = match opts.estimated_distinct {
+            Some(d) => d.max(1),
+            None => n,
+        };
+        let cap = next_pow2_capacity(cap_seed);
+        if cap > u32::MAX as usize {
+            return Err(EngineError::InputTooLarge(n));
+        }
+
+        let device = &*self.device;
+        let queue = &*self.queue;
+
+        let uniforms = Uniforms {
+            n: n as u32,
+            cap: cap as u32,
+            cap_minus_one: (cap - 1) as u32,
+            _pad: 0,
+        };
+        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("agg-uniforms"),
+            contents: bytemuck::bytes_of(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let keys_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("agg-keys"),
+            contents: bytemuck::cast_slice(keys),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let values_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("agg-values"),
+            contents: bytemuck::cast_slice(values),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let bytes = (cap * std::mem::size_of::<i32>()) as u64;
+        let mk_slot = |label: &'static str| -> wgpu::Buffer {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        };
+        let slot_keys = mk_slot("agg-slot_keys");
+        let slot_sums = mk_slot("agg-slot_sums");
+        let slot_counts = mk_slot("agg-slot_counts");
+        let slot_mins = mk_slot("agg-slot_mins");
+        let slot_maxs = mk_slot("agg-slot_maxs");
+
+        // Clear uniforms: each slot table needs a different fill value.
+        let mk_clear_u = |fill: i32, label: &'static str| -> wgpu::Buffer {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::bytes_of(&ClearUniforms {
+                    n: cap as u32, fill, _pad0: 0, _pad1: 0,
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        };
+        let cu_keys   = mk_clear_u(EMPTY_KEY,    "cu_keys");
+        let cu_sums   = mk_clear_u(0,            "cu_sums");
+        let cu_counts = mk_clear_u(0,            "cu_counts");
+        let cu_mins   = mk_clear_u(i32::MAX,     "cu_mins");
+        let cu_maxs   = mk_clear_u(i32::MIN,     "cu_maxs");
+
+        let mk_clear_bg = |u: &wgpu::Buffer, slot: &wgpu::Buffer, label: &'static str| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &self.clear_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: u.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: slot.as_entire_binding() },
+                ],
+            })
+        };
+        let cbg_keys   = mk_clear_bg(&cu_keys,   &slot_keys,   "cbg_keys");
+        let cbg_sums   = mk_clear_bg(&cu_sums,   &slot_sums,   "cbg_sums");
+        let cbg_counts = mk_clear_bg(&cu_counts, &slot_counts, "cbg_counts");
+        let cbg_mins   = mk_clear_bg(&cu_mins,   &slot_mins,   "cbg_mins");
+        let cbg_maxs   = mk_clear_bg(&cu_maxs,   &slot_maxs,   "cbg_maxs");
+
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("agg-bg"),
+            layout: &self.agg_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: keys_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: values_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: slot_keys.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: slot_sums.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: slot_counts.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: slot_mins.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: slot_maxs.as_entire_binding() },
+            ],
+        });
+
+        // Combined readback: 5 columns × cap × i32 in one staging buffer.
+        let combined_size = 5 * bytes;
+        let stage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("agg-stage"),
+            size: combined_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("agg-enc"),
+        });
+        let cap_total = (cap as u64 + WORKGROUP_SIZE as u64 - 1) / WORKGROUP_SIZE as u64;
+        let max_dim = 65_535u64;
+        let dispatch = |pass: &mut wgpu::ComputePass<'_>, total: u64| {
+            if total <= max_dim {
+                pass.dispatch_workgroups(total as u32, 1, 1);
+            } else {
+                let gx = max_dim as u32;
+                let gy = ((total + max_dim - 1) / max_dim) as u32;
+                pass.dispatch_workgroups(gx, gy, 1);
+            }
+        };
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("agg-clear-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.clear_pipeline);
+            for bg in [&cbg_keys, &cbg_sums, &cbg_counts, &cbg_mins, &cbg_maxs] {
+                pass.set_bind_group(0, bg, &[]);
+                dispatch(&mut pass, cap_total);
+            }
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("agg-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.agg_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            let total_threads = ((n as u64) + (WORKGROUP_SIZE as u64 - 1))
+                / (WORKGROUP_SIZE as u64);
+            dispatch(&mut pass, total_threads);
+        }
+        // Copy 5 buffers contiguously into the combined staging buffer.
+        encoder.copy_buffer_to_buffer(&slot_keys,   0, &stage, 0 * bytes, bytes);
+        encoder.copy_buffer_to_buffer(&slot_sums,   0, &stage, 1 * bytes, bytes);
+        encoder.copy_buffer_to_buffer(&slot_counts, 0, &stage, 2 * bytes, bytes);
+        encoder.copy_buffer_to_buffer(&slot_mins,   0, &stage, 3 * bytes, bytes);
+        encoder.copy_buffer_to_buffer(&slot_maxs,   0, &stage, 4 * bytes, bytes);
+
+        queue.submit(Some(encoder.finish()));
+
+        let raw = read_buffer_i32(device, &stage).await?;
+        let (k_part, rest)   = raw.split_at(cap);
+        let (s_part, rest)   = rest.split_at(cap);
+        let (c_part, rest)   = rest.split_at(cap);
+        let (lo_part, hi_part) = rest.split_at(cap);
+
+        let mut out = Vec::new();
+        for i in 0..cap {
+            if k_part[i] != EMPTY_KEY {
+                out.push(AggResult {
+                    key: k_part[i],
+                    sum: s_part[i] as i64,
+                    count: c_part[i] as u64,
+                    min: lo_part[i],
+                    max: hi_part[i],
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Synchronous variant of [`agg_i32_async`].
+    pub fn agg_i32(
+        &self,
+        keys: &[i32],
+        values: &[i32],
+        opts: GroupByOptions,
+    ) -> Result<Vec<AggResult>, EngineError> {
+        pollster::block_on(self.agg_i32_async(keys, values, opts))
     }
 }
 

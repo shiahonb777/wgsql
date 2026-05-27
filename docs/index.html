@@ -126,6 +126,35 @@
   </div>
 
   <div class="card">
+    <h3 style="margin:0 0 8px;font-size:14px;color:var(--muted)">Or run on your own Parquet</h3>
+    <p class="muted" style="font-size:12px;margin:4px 0">
+      Drop a file. We pick the first two integer columns (or you can name
+      them) and run <code>SELECT k, SUM(v) GROUP BY k</code> through both
+      JS Map and wgsql GPU.
+    </p>
+    <div id="dropzone" style="
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      cursor: pointer;
+      margin: 8px 0;
+    ">
+      Drop a .parquet file here, or click to choose
+      <input type="file" id="fileInput" accept=".parquet" style="display:none">
+    </div>
+    <div style="font-size:12px;margin-top:6px">
+      <label>group key column:</label>
+      <input id="colK" placeholder="auto-detect" style="width:160px">
+      <label>value column:</label>
+      <input id="colV" placeholder="auto-detect" style="width:160px">
+      <button id="runFile" disabled style="background:var(--surface-2);color:var(--muted)">load a file first</button>
+    </div>
+    <div id="fileResults" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
     <pre id="log"></pre>
   </div>
 </div>
@@ -334,6 +363,140 @@ async function runBench() {
 }
 
 $("run").addEventListener("click", () => { runBench().catch(e => log("ERROR: " + e, "err")); });
+
+// ---- File-based benchmark on a user-supplied Parquet ----
+
+let loadedParquet = null;   // { keys: Int32Array, values: Int32Array, kCol, vCol }
+
+async function loadParquetFile(file) {
+  log(`[file] reading ${file.name} (${(file.size/1e6).toFixed(1)} MB)`);
+  const buf = new Uint8Array(await file.arrayBuffer());
+
+  await ensureDuckDB();
+
+  // Register the bytes as a virtual file inside DuckDB-WASM, then ask
+  // DuckDB to parse and return columns.
+  await duckConn.bindings.registerFileBuffer(file.name, buf);
+
+  // Discover schema. Pick the first two integer-typed columns by default.
+  const schema = await duckConn.query(`DESCRIBE SELECT * FROM '${file.name}' LIMIT 0;`);
+  const intCols = [];
+  for (let i = 0; i < schema.numRows; i++) {
+    const name = schema.getChild("column_name").get(i);
+    const type = schema.getChild("column_type").get(i);
+    if (/^(INT|BIGINT|SMALLINT|TINYINT|UINTEGER|UBIGINT)/.test(type)) intCols.push(name);
+  }
+  if (intCols.length < 2) {
+    throw new Error(`need at least 2 integer columns; saw [${intCols.join(", ")}]`);
+  }
+
+  const kCol = $("colK").value.trim() || intCols[0];
+  const vCol = $("colV").value.trim() || intCols[1];
+  $("colK").placeholder = intCols[0];
+  $("colV").placeholder = intCols[1];
+
+  log(`[file] columns: ${kCol}, ${vCol}`);
+  const t = performance.now();
+  const result = await duckConn.query(
+    `SELECT CAST(${kCol} AS INTEGER) k, CAST(${vCol} AS INTEGER) v FROM '${file.name}';`
+  );
+  const tParse = performance.now() - t;
+  log(`[file] parsed in ${tParse.toFixed(0)} ms (${result.numRows.toLocaleString()} rows)`);
+
+  // Pull both columns into Int32Arrays.
+  const n = result.numRows;
+  const keys = new Int32Array(n);
+  const values = new Int32Array(n);
+  const kArr = result.getChild("k");
+  const vArr = result.getChild("v");
+  for (let i = 0; i < n; i++) {
+    keys[i] = kArr.get(i);
+    values[i] = vArr.get(i);
+  }
+
+  loadedParquet = { keys, values, kCol, vCol, fileName: file.name };
+  $("runFile").disabled = false;
+  $("runFile").style.background = "var(--accent)";
+  $("runFile").style.color = "#0b1220";
+  $("runFile").textContent = `Run on ${file.name}`;
+  $("fileResults").innerHTML = `
+    <div class="muted" style="font-size:12px">
+      ready: ${n.toLocaleString()} rows, columns
+      <code>${kCol}</code> + <code>${vCol}</code>
+    </div>
+  `;
+}
+
+async function runFileBench() {
+  if (!loadedParquet) return;
+  $("runFile").disabled = true;
+  const { keys, values, kCol, vCol, fileName } = loadedParquet;
+  const n = keys.length;
+
+  // Estimate distinct group count with a quick first-1024 sample.
+  // Underestimating just costs a probing tail; overestimating wastes
+  // hash-table memory. A 1% sample is plenty for the typical workload.
+  const sample = new Set();
+  const sampleN = Math.min(n, 50_000);
+  for (let i = 0; i < sampleN; i++) sample.add(keys[i]);
+  const groupHint = Math.max(64, sample.size * Math.ceil(n / sampleN) | 0);
+  log(`[fileRun] estimated distinct ≈ ${groupHint.toLocaleString()}`);
+
+  const t1 = performance.now();
+  const cpu = jsBaseline(keys, values);
+  const tCpu = performance.now() - t1;
+
+  const t2 = performance.now();
+  const flat = await engine.groupBySumI32(keys, values, groupHint);
+  const tGpu = performance.now() - t2;
+
+  const gpuRows = flat.length / 3;
+  const speedup = tCpu / tGpu;
+  const cls = speedup >= 1 ? "ok" : "warn";
+  $("fileResults").innerHTML = `
+    <table>
+      <thead><tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr></thead>
+      <tbody>
+        <tr><td>JS Map (${cpu.size.toLocaleString()} groups)</td>
+            <td class="num">${tCpu.toFixed(1)} ms</td>
+            <td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
+        <tr><td><strong>wgsql GPU (${gpuRows.toLocaleString()} groups)</strong></td>
+            <td class="num"><strong>${tGpu.toFixed(1)} ms</strong></td>
+            <td class="num"><strong>${(n / tGpu / 1000).toFixed(1)} M rows/s</strong></td></tr>
+      </tbody>
+    </table>
+    <div style="margin-top:8px">
+      <strong class="${cls}">${speedup.toFixed(2)}× </strong> GPU vs JS Map on ${fileName}
+      (<code>${n.toLocaleString()}</code> rows, group key = <code>${kCol}</code>)
+    </div>
+  `;
+  log(`[fileRun] cpu ${tCpu.toFixed(0)} ms, gpu ${tGpu.toFixed(0)} ms, speedup ${speedup.toFixed(2)}x`);
+  $("runFile").disabled = false;
+}
+
+const dz = $("dropzone");
+dz.addEventListener("click", () => $("fileInput").click());
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.style.borderColor = "var(--accent)"; });
+dz.addEventListener("dragleave", e => { e.preventDefault(); dz.style.borderColor = "var(--border)"; });
+dz.addEventListener("drop", async e => {
+  e.preventDefault();
+  dz.style.borderColor = "var(--border)";
+  const f = e.dataTransfer.files[0];
+  if (f) {
+    try { await loadParquetFile(f); }
+    catch (err) { log("ERROR: " + err, "err"); $("fileResults").innerHTML = `<span class='err'>${err}</span>`; }
+  }
+});
+$("fileInput").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (f) {
+    try { await loadParquetFile(f); }
+    catch (err) { log("ERROR: " + err, "err"); $("fileResults").innerHTML = `<span class='err'>${err}</span>`; }
+  }
+});
+$("runFile").addEventListener("click", () => {
+  runFileBench().catch(e => log("ERROR: " + e, "err"));
+});
 
 boot().catch(e => {
   $("status").innerHTML = "<span class='err'>Boot failed: " + e + "</span>";

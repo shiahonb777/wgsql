@@ -72,7 +72,7 @@ impl Engine {
     ) -> js_sys::Promise {
         let inner = Rc::clone(&self.inner);
         wasm_bindgen_futures::future_to_promise(async move {
-            let opts = wgsql::GroupByOptions { estimated_distinct };
+            let opts = wgsql::GroupByOptions { estimated_distinct, filter: None };
             let result = {
                 let engine = inner.borrow();
                 engine.group_by_sum_i32_with_opts_async(&keys, &values, opts).await

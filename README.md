@@ -13,19 +13,24 @@ let rows = engine.group_by_sum_i32(&category, &amount)?;
 ## Status
 
 **v0.1 — proof of concept.** One operator (GROUP BY + SUM on i32 keys
-and i32 values), one WGSL kernel, runs end-to-end on Metal today.
-Tests pass, throughput is real but not yet tuned.
+and i32 values), one WGSL kernel, runs end-to-end on Metal **and in the
+browser via WebGPU**.
+
+Live in-browser benchmark:
+**https://shiahonb777.github.io/wgsql/**
+
+(Requires a browser with WebGPU enabled — recent Chrome, Edge, Safari.)
 
 ## What it can and can't do today
 
 | op                     | status |
 |---|---|
 | `GROUP BY i32 + SUM`   | ✅ works |
+| WASM build / browser   | ✅ works (see live demo above) |
 | `WHERE` filter          | ❌ M2 |
 | `GROUP BY` on i64/f32 keys | ❌ M2 |
 | Multi-aggregate (SUM+COUNT+MIN+MAX in one pass) | ❌ M2 |
 | `JOIN`                 | ❌ M3 |
-| WASM build / browser   | ❌ M3 (engine is wgpu, port should be 1 day) |
 | Parquet zero-copy load | ❌ M3 |
 | Full SQL parser         | ❌ later |
 
@@ -61,14 +66,21 @@ benchmarks; M3 will deliver them.
 
 ```
 Cargo workspace
-├── crates/wgsql/         core library
-│   ├── src/lib.rs        public API
-│   ├── src/engine.rs     wgpu Device/Queue + pipeline
-│   ├── src/hash.rs       capacity selection
-│   └── src/group_by_sum_i32.wgsl   the kernel
-├── crates/wgsql-cli/     `wgsql` CLI: info, selftest
-└── examples/
-    └── hello_groupby.rs  10-line "SELECT k, SUM(v) GROUP BY k"
+├── crates/
+│   ├── wgsql/             core library
+│   │   ├── src/lib.rs     public API
+│   │   ├── src/engine.rs  wgpu Device/Queue + pipeline
+│   │   ├── src/hash.rs    capacity selection
+│   │   └── src/group_by_sum_i32.wgsl   the kernel
+│   ├── wgsql-cli/         `wgsql` CLI: info, selftest
+│   └── wgsql-wasm/        wasm-bindgen wrapper for the browser
+├── examples/
+│   └── hello_groupby.rs   10-line "SELECT k, SUM(v) GROUP BY k"
+├── docs/                  GitHub Pages: live in-browser demo
+│   ├── index.html
+│   ├── wgsql_wasm.js
+│   └── wgsql_wasm_bg.wasm
+└── build_wasm.sh          rebuild the WASM bundle into docs/
 ```
 
 The kernel is a textbook open-address linear-probe hash table on top
@@ -78,11 +90,28 @@ atomicAdd the value. Capacity is `next_pow2(2*n)`; sentinel is
 
 ## Build
 
+Native:
+
 ```bash
 cargo build --release
 ./target/release/wgsql info        # what GPU am I on?
 ./target/release/wgsql selftest    # CPU vs GPU benchmark
 ./target/release/hello_groupby     # the 10-line example
+```
+
+Browser (WASM):
+
+```bash
+# Once: install the WASM target and wasm-pack.
+rustup target add wasm32-unknown-unknown
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+# Build + copy artifacts into docs/.
+./build_wasm.sh
+
+# Serve locally; needs HTTPS or localhost for WebGPU.
+python3 -m http.server 8088 --directory docs
+# open http://127.0.0.1:8088/
 ```
 
 ## Tests

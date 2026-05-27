@@ -161,10 +161,20 @@ impl Engine {
 
     /// Execute SELECT key, SUM(value) FROM (keys, values) GROUP BY key.
     ///
-    /// Returns rows in arbitrary order. Sums saturate to i64 in the host
-    /// post-pass even though the GPU accumulates in i32; for v0.1 we
-    /// require the per-group sum to fit in i32 — overflow is undefined.
+    /// Synchronous on native; calls into the GPU and blocks the current
+    /// thread until results are mapped. **Do not call from WASM** —
+    /// use `group_by_sum_i32_async` instead.
     pub fn group_by_sum_i32(
+        &self,
+        keys: &[i32],
+        values: &[i32],
+    ) -> Result<Vec<GroupBySumResult>, EngineError> {
+        pollster::block_on(self.group_by_sum_i32_async(keys, values))
+    }
+
+    /// Async variant of [`group_by_sum_i32`]. Use this in WASM (where
+    /// thread-blocking is forbidden) or in async contexts.
+    pub async fn group_by_sum_i32_async(
         &self,
         keys: &[i32],
         values: &[i32],
@@ -321,8 +331,8 @@ impl Engine {
         queue.submit(Some(encoder.finish()));
 
         // Map both staging buffers and read.
-        let keys_out = pollster::block_on(read_buffer_i32(device, &slot_keys_stage))?;
-        let sums_out = pollster::block_on(read_buffer_i32(device, &slot_sums_stage))?;
+        let keys_out = read_buffer_i32(device, &slot_keys_stage).await?;
+        let sums_out = read_buffer_i32(device, &slot_sums_stage).await?;
 
         let mut out = Vec::new();
         for (k, s) in keys_out.into_iter().zip(sums_out.into_iter()) {

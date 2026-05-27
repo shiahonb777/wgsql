@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wgsql — browser GROUP BY benchmark</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface: #181b22;
+    --text: #e8ebf2;
+    --muted: #9aa1ad;
+    --accent: #6ab0ff;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad:  #f87171;
+    --border: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI",
+          Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px 16px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h1 small { color: var(--muted); font-weight: 400; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+  }
+  button {
+    background: var(--accent);
+    color: #0b1220;
+    border: 0;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  label { color: var(--muted); display: inline-block; margin-right: 6px; }
+  select, input {
+    background: #0b0e13;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-right: 8px;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  td, th {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ok  { color: var(--good); }
+  .warn { color: var(--warn); }
+  .err { color: var(--bad); }
+  .muted { color: var(--muted); }
+  pre {
+    background: #0b0e13;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 0;
+    overflow-x: auto;
+    font-size: 12px;
+  }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>wgsql <small>— GPU GROUP BY in your browser</small></h1>
+  <p class="muted">
+    A WGSL kernel runs <code>SELECT key, SUM(value) GROUP BY key</code>
+    on your GPU. Compares against a JavaScript <code>Map</code> baseline
+    on the same data. Source:
+    <a href="https://github.com/shiahonb777/wgsql" target="_blank">github.com/shiahonb777/wgsql</a>.
+  </p>
+
+  <div class="card">
+    <div id="status">checking WebGPU support…</div>
+  </div>
+
+  <div class="card" id="controls" style="display:none">
+    <label>n =</label>
+    <select id="n">
+      <option value="100000">100 K</option>
+      <option value="1000000" selected>1 M</option>
+      <option value="10000000">10 M</option>
+    </select>
+    <label>distinct groups =</label>
+    <select id="g">
+      <option value="1024" selected>1 K</option>
+      <option value="100000">100 K</option>
+      <option value="1000000">1 M</option>
+    </select>
+    <button id="run">Run benchmark</button>
+  </div>
+
+  <div class="card" id="results" style="display:none">
+    <table>
+      <thead>
+        <tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+    <div id="speedup" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <pre id="log"></pre>
+  </div>
+</div>
+
+<script type="module">
+import init, { init as wgsqlInit } from "./wgsql_wasm.js";
+
+const $ = id => document.getElementById(id);
+const log = (line, cls = "") => {
+  const pre = $("log");
+  const el = document.createElement("span");
+  if (cls) el.className = cls;
+  el.textContent = line + "\n";
+  pre.appendChild(el);
+};
+
+let engine = null;
+
+async function boot() {
+  if (!("gpu" in navigator)) {
+    $("status").innerHTML =
+      "<span class='err'>This browser does not expose WebGPU. " +
+      "Try a recent Chrome, Edge, or Safari Technology Preview.</span>";
+    return;
+  }
+  $("status").textContent = "loading WASM module…";
+  await init();              // wasm-bindgen module initializer
+  log("[boot] wasm module loaded");
+  try {
+    engine = await wgsqlInit();
+  } catch (e) {
+    $("status").innerHTML =
+      "<span class='err'>Failed to initialize wgsql engine: " + e + "</span>";
+    return;
+  }
+  $("status").innerHTML =
+    "<span class='ok'>wgsql ready</span> on " +
+    "<code>" + engine.backend + "</code> / " +
+    "<code>" + engine.adapterName + "</code>";
+  $("controls").style.display = "block";
+  log("[boot] backend=" + engine.backend + " adapter=" + engine.adapterName);
+}
+
+// Deterministic xorshift32 so the generated data matches the native test.
+function makeData(n, gMod) {
+  const keys = new Int32Array(n);
+  const values = new Int32Array(n);
+  let x = 0xCAFEBABE | 0;
+  for (let i = 0; i < n; i++) {
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    keys[i] = (x >>> 0) % gMod;
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    values[i] = (x >>> 0) % 1000;
+  }
+  return { keys, values };
+}
+
+function jsBaseline(keys, values) {
+  // Map<i32, BigInt> would be ideal but BigInt math is slow; we use
+  // plain Number sums since values stay well below 2^53 for our test
+  // sizes.
+  const acc = new Map();
+  const n = keys.length;
+  for (let i = 0; i < n; i++) {
+    const k = keys[i];
+    acc.set(k, (acc.get(k) || 0) + values[i]);
+  }
+  return acc;
+}
+
+async function runBench() {
+  const n = parseInt($("n").value, 10);
+  const groups = parseInt($("g").value, 10);
+  $("run").disabled = true;
+  $("results").style.display = "none";
+
+  log(`[run] n=${n.toLocaleString()} groups=${groups.toLocaleString()}`);
+
+  // Generate data.
+  const t0 = performance.now();
+  const { keys, values } = makeData(n, groups);
+  const tGen = performance.now() - t0;
+  log(`  gen        ${tGen.toFixed(1)} ms`);
+
+  // JS baseline.
+  const t1 = performance.now();
+  const cpuMap = jsBaseline(keys, values);
+  const tCpu = performance.now() - t1;
+
+  // GPU run.
+  const t2 = performance.now();
+  const flat = await engine.groupBySumI32(keys, values);
+  const tGpu = performance.now() - t2;
+
+  // Validate spot checks: same number of distinct keys, and a few
+  // randomly chosen sums match.
+  const gpuRows = flat.length / 3;
+  let matches = 0, checked = 0;
+  for (let i = 0; i < flat.length && checked < Math.min(50, gpuRows); i += 3) {
+    const k = flat[i];
+    const lo = flat[i+1] >>> 0;
+    const hi = flat[i+2];
+    // Reconstruct i64 via Number; values stay within safe-int.
+    const gpuSum = hi * 4294967296 + lo;
+    const cpuSum = cpuMap.get(k);
+    if (cpuSum !== undefined && Math.abs(gpuSum - cpuSum) < 1) matches++;
+    checked++;
+  }
+  const correctness = (matches === checked && cpuMap.size === gpuRows)
+    ? `<span class='ok'>OK</span> (${gpuRows} groups, ${matches}/${checked} sums match)`
+    : `<span class='err'>MISMATCH</span> (gpu ${gpuRows} groups vs cpu ${cpuMap.size}, ${matches}/${checked} sums match)`;
+
+  $("results-body").innerHTML = `
+    <tr><td>data generation</td><td class="num">${tGen.toFixed(1)} ms</td><td class="num muted">— host</td></tr>
+    <tr><td>JS baseline (Map)</td><td class="num">${tCpu.toFixed(1)} ms</td><td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
+    <tr><td>wgsql GPU</td><td class="num">${tGpu.toFixed(1)} ms</td><td class="num">${(n / tGpu / 1000).toFixed(1)} M rows/s</td></tr>
+  `;
+  const speedup = tCpu / tGpu;
+  const cls = speedup >= 1 ? "ok" : "warn";
+  $("speedup").innerHTML = `
+    <strong class="${cls}">${speedup.toFixed(2)}× </strong>
+    GPU vs JS Map.&nbsp; ${correctness}
+  `;
+  $("results").style.display = "block";
+
+  log(`  cpu        ${tCpu.toFixed(1)} ms (${(n/tCpu/1000).toFixed(1)} M rows/s)`);
+  log(`  gpu        ${tGpu.toFixed(1)} ms (${(n/tGpu/1000).toFixed(1)} M rows/s)`);
+  log(`  speedup    ${speedup.toFixed(2)}x`);
+
+  $("run").disabled = false;
+}
+
+$("run").addEventListener("click", () => { runBench().catch(e => log("ERROR: " + e, "err")); });
+
+boot().catch(e => {
+  $("status").innerHTML = "<span class='err'>Boot failed: " + e + "</span>";
+  log("ERROR: " + e, "err");
+});
+</script>
+</body>
+</html>

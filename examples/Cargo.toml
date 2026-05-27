@@ -1,0 +1,13 @@
+[package]
+name = "wgsql-examples"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+wgsql = { path = "../crates/wgsql" }
+anyhow = "1"
+
+[[bin]]
+name = "hello_groupby"
+path = "hello_groupby.rs"

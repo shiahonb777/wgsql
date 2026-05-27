@@ -1,0 +1,23 @@
+[package]
+name = "wgsql"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GPU-accelerated columnar OLAP via WebGPU. Native + browser."
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wgpu = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+futures-channel = "0.3"
+
+[dev-dependencies]

@@ -1,28 +1,14 @@
-// Multi-aggregate hash GROUP BY:
-//   SELECT key, SUM(value), COUNT(*), MIN(value), MAX(value)
-//   FROM (keys, values) GROUP BY key.
-//
-// One pass; four aggregates per group, all in atomic operations on
-// per-slot storage. Atomics:
-//   - sum   : atomicAdd (saturates host-side to i64)
-//   - count : atomicAdd
-//   - min   : atomicMin
-//   - max   : atomicMax
-//
-// Slot layout (5 i32 fields per slot):
-//   slot_keys[s]   - i32 (atomic, EMPTY_KEY = i32::MIN means free)
-//   slot_sums[s]   - atomic<i32>
-//   slot_counts[s] - atomic<i32>
-//   slot_mins[s]   - atomic<i32>, init i32::MAX
-//   slot_maxs[s]   - atomic<i32>, init i32::MIN
-//
-// Hash table is power-of-two; linear probing on collision.
+// Multi-aggregate hash GROUP BY (SUM, COUNT, MIN, MAX) + optional WHERE.
 
 struct Uniforms {
     n: u32,
     cap: u32,
     cap_minus_one: u32,
-    _pad: u32,
+    filter_kind: u32,
+    filter_threshold: i32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -34,7 +20,19 @@ struct Uniforms {
 @group(0) @binding(6) var<storage, read_write> slot_mins: array<atomic<i32>>;
 @group(0) @binding(7) var<storage, read_write> slot_maxs: array<atomic<i32>>;
 
-const EMPTY_KEY: i32 = -2147483648;  // i32::MIN
+const EMPTY_KEY: i32 = -2147483648;
+
+fn passes_filter(v: i32) -> bool {
+    let kind = u.filter_kind;
+    if (kind == 0u) { return true; }
+    let t = u.filter_threshold;
+    if (kind == 1u) { return v == t; }
+    if (kind == 2u) { return v != t; }
+    if (kind == 3u) { return v <  t; }
+    if (kind == 4u) { return v <= t; }
+    if (kind == 5u) { return v >  t; }
+    return v >= t;
+}
 
 fn hash32(x: i32) -> u32 {
     var h: u32 = bitcast<u32>(x);
@@ -42,6 +40,13 @@ fn hash32(x: i32) -> u32 {
     h = (h ^ (h >> 13u)) * 0xc2b2ae35u;
     h = h ^ (h >> 16u);
     return h;
+}
+
+fn record(slot: u32, v: i32) {
+    atomicAdd(&slot_sums[slot], v);
+    atomicAdd(&slot_counts[slot], 1);
+    atomicMin(&slot_mins[slot], v);
+    atomicMax(&slot_maxs[slot], v);
 }
 
 @compute @workgroup_size(64)
@@ -52,33 +57,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     if (i >= u.n) {
         return;
     }
-    let k = keys[i];
     let v = values[i];
+    if (!passes_filter(v)) {
+        return;
+    }
+    let k = keys[i];
 
     var slot: u32 = hash32(k) & u.cap_minus_one;
     for (var probe: u32 = 0u; probe < u.cap; probe = probe + 1u) {
         let cur = atomicLoad(&slot_keys[slot]);
         if (cur == k) {
-            atomicAdd(&slot_sums[slot], v);
-            atomicAdd(&slot_counts[slot], 1);
-            atomicMin(&slot_mins[slot], v);
-            atomicMax(&slot_maxs[slot], v);
+            record(slot, v);
             return;
         }
         if (cur == EMPTY_KEY) {
             let cas = atomicCompareExchangeWeak(&slot_keys[slot], EMPTY_KEY, k);
             if (cas.exchanged) {
-                atomicAdd(&slot_sums[slot], v);
-                atomicAdd(&slot_counts[slot], 1);
-                atomicMin(&slot_mins[slot], v);
-                atomicMax(&slot_maxs[slot], v);
+                record(slot, v);
                 return;
             }
             if (cas.old_value == k) {
-                atomicAdd(&slot_sums[slot], v);
-                atomicAdd(&slot_counts[slot], 1);
-                atomicMin(&slot_mins[slot], v);
-                atomicMax(&slot_maxs[slot], v);
+                record(slot, v);
                 return;
             }
         }

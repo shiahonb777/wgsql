@@ -32,6 +32,34 @@ pub struct GroupByOptions {
     /// is conservative but wastes memory and clear-kernel time when
     /// `distinct << n`.
     pub estimated_distinct: Option<usize>,
+    /// Optional WHERE filter on the value column. The filter is fused
+    /// into the aggregation kernel; rows where the predicate evaluates
+    /// to false are skipped without ever touching the hash table.
+    pub filter: Option<Filter>,
+}
+
+/// A filter predicate over the value column.
+///
+/// Evaluated as `value <op> threshold`. WHERE-clause analogues:
+///   `Filter::ge(100)` ↔ `WHERE value >= 100`.
+#[derive(Clone, Copy, Debug)]
+pub struct Filter {
+    pub op: FilterOp,
+    pub threshold: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum FilterOp {
+    Eq, Ne, Lt, Le, Gt, Ge,
+}
+
+impl Filter {
+    pub fn eq(t: i32) -> Self { Self { op: FilterOp::Eq, threshold: t } }
+    pub fn ne(t: i32) -> Self { Self { op: FilterOp::Ne, threshold: t } }
+    pub fn lt(t: i32) -> Self { Self { op: FilterOp::Lt, threshold: t } }
+    pub fn le(t: i32) -> Self { Self { op: FilterOp::Le, threshold: t } }
+    pub fn gt(t: i32) -> Self { Self { op: FilterOp::Gt, threshold: t } }
+    pub fn ge(t: i32) -> Self { Self { op: FilterOp::Ge, threshold: t } }
 }
 
 /// One row of a GROUP BY result.
@@ -85,7 +113,37 @@ struct Uniforms {
     n: u32,
     cap: u32,
     cap_minus_one: u32,
-    _pad: u32,
+    filter_kind: u32,
+    filter_threshold: i32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+impl Uniforms {
+    fn build(n: usize, cap: usize, filter: Option<Filter>) -> Self {
+        let (kind, t) = match filter {
+            None => (0, 0),
+            Some(f) => (
+                match f.op {
+                    FilterOp::Eq => 1, FilterOp::Ne => 2,
+                    FilterOp::Lt => 3, FilterOp::Le => 4,
+                    FilterOp::Gt => 5, FilterOp::Ge => 6,
+                },
+                f.threshold,
+            ),
+        };
+        Self {
+            n: n as u32,
+            cap: cap as u32,
+            cap_minus_one: (cap - 1) as u32,
+            filter_kind: kind,
+            filter_threshold: t,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        }
+    }
 }
 
 #[repr(C)]
@@ -356,12 +414,7 @@ impl Engine {
         let queue = &*self.queue;
 
         // Uniforms.
-        let uniforms = Uniforms {
-            n: n as u32,
-            cap: cap as u32,
-            cap_minus_one: (cap - 1) as u32,
-            _pad: 0,
-        };
+        let uniforms = Uniforms::build(n, cap, opts.filter);
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("uniforms"),
             contents: bytemuck::bytes_of(&uniforms),
@@ -550,12 +603,7 @@ impl Engine {
         let device = &*self.device;
         let queue = &*self.queue;
 
-        let uniforms = Uniforms {
-            n: n as u32,
-            cap: cap as u32,
-            cap_minus_one: (cap - 1) as u32,
-            _pad: 0,
-        };
+        let uniforms = Uniforms::build(n, cap, opts.filter);
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("agg-uniforms"),
             contents: bytemuck::bytes_of(&uniforms),

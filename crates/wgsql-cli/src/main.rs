@@ -85,7 +85,7 @@ fn run_groupby_bench(engine: &wgsql::Engine, n: usize, n_groups: usize) -> Resul
 
     let t = Instant::now();
     let result = engine.group_by_sum_i32_with_opts(
-        &keys, &values, wgsql::GroupByOptions { estimated_distinct: Some(n_groups) },
+        &keys, &values, wgsql::GroupByOptions { estimated_distinct: Some(n_groups), filter: None },
     )?;
     let gpu = t.elapsed();
     let speedup = cpu.as_secs_f64() / gpu.as_secs_f64();
@@ -118,7 +118,7 @@ fn run_agg_bench(engine: &wgsql::Engine, n: usize, n_groups: usize) -> Result<()
 
     let t = Instant::now();
     let result = engine.agg_i32(
-        &keys, &values, wgsql::GroupByOptions { estimated_distinct: Some(n_groups) },
+        &keys, &values, wgsql::GroupByOptions { estimated_distinct: Some(n_groups), filter: None },
     )?;
     let gpu = t.elapsed();
     let speedup = cpu.as_secs_f64() / gpu.as_secs_f64();

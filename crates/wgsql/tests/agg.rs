@@ -28,7 +28,7 @@ fn cpu_agg(keys: &[i32], values: &[i32]) -> Cpu {
 
 fn assert_agg_eq(engine: &Engine, keys: &[i32], values: &[i32], n_groups_hint: Option<usize>) {
     let cpu = cpu_agg(keys, values);
-    let opts = GroupByOptions { estimated_distinct: n_groups_hint };
+    let opts = GroupByOptions { estimated_distinct: n_groups_hint, filter: None };
     let gpu = engine.agg_i32(keys, values, opts).expect("gpu run");
     assert_eq!(gpu.len(), cpu.sum.len(), "group count mismatch");
     let map: HashMap<i32, AggResult> = gpu.iter().map(|r| (r.key, *r)).collect();

@@ -39,12 +39,13 @@ run.
 | op                     | status |
 |---|---|
 | `GROUP BY i32 + SUM`   | ✅ works |
+| Multi-aggregate (SUM+COUNT+MIN+MAX in one pass) | ✅ works |
+| `WHERE` filter (eq/ne/lt/le/gt/ge) | ✅ works (fused) |
+| Inner JOIN on i32 keys | ✅ works |
 | WASM build / browser   | ✅ works (see live demo above) |
-| `WHERE` filter          | ❌ M2 |
-| `GROUP BY` on i64/f32 keys | ❌ M2 |
-| Multi-aggregate (SUM+COUNT+MIN+MAX in one pass) | ❌ M2 |
-| `JOIN`                 | ❌ M3 |
-| Parquet zero-copy load | ❌ M3 |
+| Drag-drop Parquet in the demo | ✅ works (via DuckDB-WASM parser) |
+| `GROUP BY` on i64/f32/string keys | ❌ later |
+| OUTER JOIN, ANTI JOIN  | ❌ later |
 | Full SQL parser         | ❌ later |
 
 ## Honest performance

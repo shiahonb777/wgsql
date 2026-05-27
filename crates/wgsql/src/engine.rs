@@ -69,6 +69,15 @@ pub struct GroupBySumResult {
     pub sum: i64,
 }
 
+/// One row of an inner-join result: (probe_value, build_value).
+/// Probe side is the "left" or "large" table; build is the "right" or
+/// "small" dimension table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinResult {
+    pub probe_value: i32,
+    pub build_value: i32,
+}
+
 /// One row of a multi-aggregate result. SUM/COUNT/MIN/MAX in one pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AggResult {
@@ -95,6 +104,12 @@ pub struct Engine {
     /// Multi-aggregate pipeline (SUM, COUNT, MIN, MAX in one pass).
     agg_pipeline: wgpu::ComputePipeline,
     agg_bgl: wgpu::BindGroupLayout,
+    /// Hash JOIN: build side (insert into hash table).
+    join_build_pipeline: wgpu::ComputePipeline,
+    join_build_bgl: wgpu::BindGroupLayout,
+    /// Hash JOIN: probe side (lookup + emit pairs).
+    join_probe_pipeline: wgpu::ComputePipeline,
+    join_probe_bgl: wgpu::BindGroupLayout,
     pub adapter_info: wgpu::AdapterInfo,
 }
 
@@ -155,9 +170,20 @@ struct ClearUniforms {
     _pad1: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct JoinUniforms {
+    n: u32,
+    cap: u32,
+    cap_minus_one: u32,
+    max_output: u32,
+}
+
 const SHADER: &str = include_str!("group_by_sum_i32.wgsl");
 const CLEAR_SHADER: &str = include_str!("clear_i32.wgsl");
 const AGG_SHADER: &str = include_str!("agg_i32.wgsl");
+const JOIN_BUILD_SHADER: &str = include_str!("join_build_i32.wgsl");
+const JOIN_PROBE_SHADER: &str = include_str!("join_probe_i32.wgsl");
 const WORKGROUP_SIZE: u32 = 64;
 
 impl Engine {
@@ -316,6 +342,81 @@ impl Engine {
             cache: None,
         });
 
+        // ---- join_build_i32 kernel.
+        let join_build_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("join_build_i32"),
+            source: wgpu::ShaderSource::Wgsl(JOIN_BUILD_SHADER.into()),
+        });
+        let join_build_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("join_build-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                Self::storage_layout_entry(1, true),  // build keys
+                Self::storage_layout_entry(2, true),  // build values
+                Self::storage_layout_entry(3, false), // slot_keys
+                Self::storage_layout_entry(4, false), // slot_values
+            ],
+        });
+        let join_build_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("join_build-pl"),
+            bind_group_layouts: &[&join_build_bgl],
+            push_constant_ranges: &[],
+        });
+        let join_build_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("join_build-pipe"),
+            layout: Some(&join_build_pl),
+            module: &join_build_shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+        // ---- join_probe_i32 kernel.
+        let join_probe_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("join_probe_i32"),
+            source: wgpu::ShaderSource::Wgsl(JOIN_PROBE_SHADER.into()),
+        });
+        let join_probe_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("join_probe-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                Self::storage_layout_entry(1, true),  // probe keys
+                Self::storage_layout_entry(2, true),  // probe values
+                Self::storage_layout_entry(3, true),  // slot_keys (read)
+                Self::storage_layout_entry(4, true),  // slot_values (read)
+                Self::storage_layout_entry(5, false), // out_count
+                Self::storage_layout_entry(6, false), // out_left
+                Self::storage_layout_entry(7, false), // out_right
+            ],
+        });
+        let join_probe_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("join_probe-pl"),
+            bind_group_layouts: &[&join_probe_bgl],
+            push_constant_ranges: &[],
+        });
+        let join_probe_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("join_probe-pipe"),
+            layout: Some(&join_probe_pl),
+            module: &join_probe_shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         Ok(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
@@ -325,6 +426,10 @@ impl Engine {
             clear_bgl,
             agg_pipeline,
             agg_bgl,
+            join_build_pipeline,
+            join_build_bgl,
+            join_probe_pipeline,
+            join_probe_bgl,
             adapter_info,
         })
     }
@@ -766,6 +871,281 @@ impl Engine {
         opts: GroupByOptions,
     ) -> Result<Vec<AggResult>, EngineError> {
         pollster::block_on(self.agg_i32_async(keys, values, opts))
+    }
+
+    /// Inner equi-join on i32 keys.
+    ///
+    /// `build_keys` and `build_values` define the smaller (build) table;
+    /// the engine constructs a hash table from them. `probe_keys` and
+    /// `probe_values` define the larger (probe) table; for each probe
+    /// row we look up the key in the hash table and emit a JoinResult
+    /// if found.
+    ///
+    /// `max_output` caps the number of result pairs we'll write. The
+    /// host should size this conservatively. If the upper-bound is hit,
+    /// later matches are dropped — call again with a larger cap.
+    pub async fn inner_join_i32_async(
+        &self,
+        build_keys: &[i32],
+        build_values: &[i32],
+        probe_keys: &[i32],
+        probe_values: &[i32],
+        max_output: usize,
+    ) -> Result<Vec<JoinResult>, EngineError> {
+        if build_keys.len() != build_values.len() {
+            return Err(EngineError::LengthMismatch {
+                keys: build_keys.len(), values: build_values.len(),
+            });
+        }
+        if probe_keys.len() != probe_values.len() {
+            return Err(EngineError::LengthMismatch {
+                keys: probe_keys.len(), values: probe_values.len(),
+            });
+        }
+        let n_build = build_keys.len();
+        let n_probe = probe_keys.len();
+        if n_build == 0 || n_probe == 0 || max_output == 0 {
+            return Ok(Vec::new());
+        }
+        if n_build > u32::MAX as usize || n_probe > u32::MAX as usize {
+            return Err(EngineError::InputTooLarge(n_build.max(n_probe)));
+        }
+        let cap = next_pow2_capacity(n_build);
+        if cap > u32::MAX as usize {
+            return Err(EngineError::InputTooLarge(n_build));
+        }
+        let max_output = max_output.min(u32::MAX as usize);
+
+        let device = &*self.device;
+        let queue = &*self.queue;
+
+        // Build-side uniforms: filter is unused but the kernel expects
+        // 4 fields, so reuse the join uniforms (max_output ignored on
+        // build side).
+        let bu = JoinUniforms { n: n_build as u32, cap: cap as u32, cap_minus_one: (cap - 1) as u32, max_output: 0 };
+        let pu = JoinUniforms { n: n_probe as u32, cap: cap as u32, cap_minus_one: (cap - 1) as u32, max_output: max_output as u32 };
+        let build_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-build-uniforms"),
+            contents: bytemuck::bytes_of(&bu),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let probe_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-probe-uniforms"),
+            contents: bytemuck::bytes_of(&pu),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        // Build-table input buffers.
+        let build_keys_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-build-keys"),
+            contents: bytemuck::cast_slice(build_keys),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let build_values_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-build-values"),
+            contents: bytemuck::cast_slice(build_values),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let probe_keys_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-probe-keys"),
+            contents: bytemuck::cast_slice(probe_keys),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let probe_values_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-probe-values"),
+            contents: bytemuck::cast_slice(probe_values),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Slot tables (key + value), populated by build kernel, read by
+        // probe kernel.
+        let slot_bytes = (cap * std::mem::size_of::<i32>()) as u64;
+        let slot_keys = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-slot_keys"),
+            size: slot_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let slot_values = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-slot_values"),
+            size: slot_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        // Output buffers. Atomic counter + two i32 columns of size max_output.
+        let out_count = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-out_count"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let out_bytes = (max_output * std::mem::size_of::<i32>()) as u64;
+        let out_left = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-out_left"),
+            size: out_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let out_right = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-out_right"),
+            size: out_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // Clear slot_keys to EMPTY_KEY (slot_values stays uninitialized;
+        // probe never reads it for empty slots).
+        let cu = ClearUniforms { n: cap as u32, fill: EMPTY_KEY, _pad0: 0, _pad1: 0 };
+        let cu_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-clear-u"),
+            contents: bytemuck::bytes_of(&cu),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let clear_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("join-clear-bg"),
+            layout: &self.clear_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: cu_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: slot_keys.as_entire_binding() },
+            ],
+        });
+        // Also zero out_count.
+        let zero_u = ClearUniforms { n: 1, fill: 0, _pad0: 0, _pad1: 0 };
+        let zero_u_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("join-zero-u"),
+            contents: bytemuck::bytes_of(&zero_u),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let zero_count_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("join-zero-count-bg"),
+            layout: &self.clear_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: zero_u_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out_count.as_entire_binding() },
+            ],
+        });
+
+        // Build bind group.
+        let build_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("join-build-bg"),
+            layout: &self.join_build_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: build_uniform_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: build_keys_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: build_values_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: slot_keys.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: slot_values.as_entire_binding() },
+            ],
+        });
+        let probe_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("join-probe-bg"),
+            layout: &self.join_probe_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: probe_uniform_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: probe_keys_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: probe_values_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: slot_keys.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: slot_values.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: out_count.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: out_left.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: out_right.as_entire_binding() },
+            ],
+        });
+
+        // Staging: out_count (4 bytes) + out_left + out_right.
+        let count_stage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-count-stage"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let pairs_stage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("join-pairs-stage"),
+            size: 2 * out_bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("join-enc"),
+        });
+        let cap_total = (cap as u64 + WORKGROUP_SIZE as u64 - 1) / WORKGROUP_SIZE as u64;
+        let max_dim = 65_535u64;
+        let dispatch = |pass: &mut wgpu::ComputePass<'_>, total: u64| {
+            if total <= max_dim {
+                pass.dispatch_workgroups(total as u32, 1, 1);
+            } else {
+                let gx = max_dim as u32;
+                let gy = ((total + max_dim - 1) / max_dim) as u32;
+                pass.dispatch_workgroups(gx, gy, 1);
+            }
+        };
+        // Pass 1: clear slot_keys + zero out_count.
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("join-clear-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.clear_pipeline);
+            pass.set_bind_group(0, &clear_bg, &[]);
+            dispatch(&mut pass, cap_total);
+            pass.set_bind_group(0, &zero_count_bg, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        // Pass 2: build.
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("join-build-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.join_build_pipeline);
+            pass.set_bind_group(0, &build_bg, &[]);
+            let total = (n_build as u64 + WORKGROUP_SIZE as u64 - 1) / WORKGROUP_SIZE as u64;
+            dispatch(&mut pass, total);
+        }
+        // Pass 3: probe.
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("join-probe-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.join_probe_pipeline);
+            pass.set_bind_group(0, &probe_bg, &[]);
+            let total = (n_probe as u64 + WORKGROUP_SIZE as u64 - 1) / WORKGROUP_SIZE as u64;
+            dispatch(&mut pass, total);
+        }
+        encoder.copy_buffer_to_buffer(&out_count, 0, &count_stage, 0, 4);
+        encoder.copy_buffer_to_buffer(&out_left,  0, &pairs_stage, 0,         out_bytes);
+        encoder.copy_buffer_to_buffer(&out_right, 0, &pairs_stage, out_bytes, out_bytes);
+
+        queue.submit(Some(encoder.finish()));
+
+        let count_data = read_buffer_i32(device, &count_stage).await?;
+        let pair_data  = read_buffer_i32(device, &pairs_stage).await?;
+        let n_out = (count_data[0] as u32) as usize;
+        let n_out = n_out.min(max_output);
+        let (left, right) = pair_data.split_at(max_output);
+
+        let mut out = Vec::with_capacity(n_out);
+        for i in 0..n_out {
+            out.push(JoinResult { probe_value: left[i], build_value: right[i] });
+        }
+        Ok(out)
+    }
+
+    /// Synchronous variant of [`inner_join_i32_async`].
+    pub fn inner_join_i32(
+        &self,
+        build_keys: &[i32],
+        build_values: &[i32],
+        probe_keys: &[i32],
+        probe_values: &[i32],
+        max_output: usize,
+    ) -> Result<Vec<JoinResult>, EngineError> {
+        pollster::block_on(self.inner_join_i32_async(
+            build_keys, build_values, probe_keys, probe_values, max_output,
+        ))
     }
 }
 

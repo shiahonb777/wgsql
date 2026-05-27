@@ -25,4 +25,4 @@
 mod engine;
 mod hash;
 
-pub use engine::{Engine, EngineError, GroupBySumResult};
+pub use engine::{Engine, EngineError, GroupByOptions, GroupBySumResult};

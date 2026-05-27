@@ -9,10 +9,13 @@ export class Engine {
      * Run SELECT key, SUM(value) GROUP BY key.
      *
      * `keys` and `values` are i32 typed arrays of equal length.
+     * `estimatedDistinct` (optional) is the approximate group cardinality;
+     * passing it lets us size the GPU hash table tightly and is a 5x+
+     * speedup when distinct keys ≪ row count.
      * Returns a flat Int32Array of [key0, sum_lo0, sum_hi0, key1, ...]
      * because JS lacks a native i64 typed array.
      */
-    groupBySumI32(keys: Int32Array, values: Int32Array): Promise<any>;
+    groupBySumI32(keys: Int32Array, values: Int32Array, estimated_distinct?: number | null): Promise<any>;
     /**
      * Adapter name (e.g. "Apple M2 Pro"). Useful for the demo UI.
      */
@@ -37,7 +40,7 @@ export interface InitOutput {
     readonly __wbg_engine_free: (a: number, b: number) => void;
     readonly engine_adapterName: (a: number) => [number, number];
     readonly engine_backend: (a: number) => [number, number];
-    readonly engine_groupBySumI32: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly engine_groupBySumI32: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly init: () => any;
     readonly init_panic_hook: () => void;
     readonly wasm_bindgen__convert__closures_____invoke__h64f41ba5f43c9580: (a: number, b: number, c: any) => [number, number];

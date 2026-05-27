@@ -69,7 +69,10 @@ fn cmd_selftest() -> Result<()> {
         let cpu_dur = t_cpu.elapsed();
 
         let t_gpu = Instant::now();
-        let result = engine.group_by_sum_i32(&keys, &values)?;
+        let result = engine.group_by_sum_i32_with_opts(
+            &keys, &values,
+            wgsql::GroupByOptions { estimated_distinct: Some(n_groups) },
+        )?;
         let gpu_dur = t_gpu.elapsed();
         let gpu_throughput = (n as f64) / gpu_dur.as_secs_f64();
         let speedup = cpu_dur.as_secs_f64() / gpu_dur.as_secs_f64();

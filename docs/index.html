@@ -216,7 +216,7 @@ async function runBench() {
 
   // GPU run.
   const t2 = performance.now();
-  const flat = await engine.groupBySumI32(keys, values);
+  const flat = await engine.groupBySumI32(keys, values, groups);
   const tGpu = performance.now() - t2;
 
   // Validate spot checks: same number of distinct keys, and a few

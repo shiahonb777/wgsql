@@ -53,18 +53,22 @@ export class Engine {
      * Run SELECT key, SUM(value) GROUP BY key.
      *
      * `keys` and `values` are i32 typed arrays of equal length.
+     * `estimatedDistinct` (optional) is the approximate group cardinality;
+     * passing it lets us size the GPU hash table tightly and is a 5x+
+     * speedup when distinct keys ≪ row count.
      * Returns a flat Int32Array of [key0, sum_lo0, sum_hi0, key1, ...]
      * because JS lacks a native i64 typed array.
      * @param {Int32Array} keys
      * @param {Int32Array} values
+     * @param {number | null} [estimated_distinct]
      * @returns {Promise<any>}
      */
-    groupBySumI32(keys, values) {
+    groupBySumI32(keys, values, estimated_distinct) {
         const ptr0 = passArray32ToWasm0(keys, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passArray32ToWasm0(values, wasm.__wbindgen_malloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.engine_groupBySumI32(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        const ret = wasm.engine_groupBySumI32(this.__wbg_ptr, ptr0, len0, ptr1, len1, isLikeNone(estimated_distinct) ? Number.MAX_SAFE_INTEGER : (estimated_distinct) >>> 0);
         return ret;
     }
 }

@@ -36,6 +36,11 @@ pub struct Engine {
     queue: Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    /// Tiny i32-fill kernel used to initialize slot_keys with EMPTY_KEY.
+    /// Avoids issuing many `queue.write_buffer` chunks, which is slow
+    /// on browser WebGPU.
+    clear_pipeline: wgpu::ComputePipeline,
+    clear_bgl: wgpu::BindGroupLayout,
     pub adapter_info: wgpu::AdapterInfo,
 }
 
@@ -57,7 +62,17 @@ struct Uniforms {
     _pad: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ClearUniforms {
+    n: u32,
+    fill: i32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
 const SHADER: &str = include_str!("group_by_sum_i32.wgsl");
+const CLEAR_SHADER: &str = include_str!("clear_i32.wgsl");
 const WORKGROUP_SIZE: u32 = 64;
 
 impl Engine {
@@ -137,11 +152,48 @@ impl Engine {
             cache: None,
         });
 
+        // ---- clear_i32 kernel: fills an i32 buffer with a uniform value.
+        let clear_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("clear_i32"),
+            source: wgpu::ShaderSource::Wgsl(CLEAR_SHADER.into()),
+        });
+        let clear_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("clear_i32-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                Self::storage_layout_entry(1, false),
+            ],
+        });
+        let clear_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("clear_i32-pl"),
+            bind_group_layouts: &[&clear_bgl],
+            push_constant_ranges: &[],
+        });
+        let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("clear_i32-pipe"),
+            layout: Some(&clear_pl),
+            module: &clear_shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         Ok(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
             pipeline,
             bind_group_layout,
+            clear_pipeline,
+            clear_bgl,
             adapter_info,
         })
     }
@@ -226,54 +278,63 @@ impl Engine {
         });
 
         // Slot tables. Initialize keys to EMPTY_KEY, sums to 0.
-        // For large `cap`, the host-side vec![EMPTY_KEY; cap] dominates
-        // overall query time. Use the GPU's own clear-buffer to fill
-        // sums (which are zero) and a small repeated-pattern upload for
-        // keys (which need EMPTY_KEY = i32::MIN).
+        // Allocate uninitialized; we'll clear via a tiny GPU kernel.
+        // Using GPU-side fill avoids the per-chunk overhead of
+        // queue.write_buffer in browser WebGPU.
         let slot_keys_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slot_keys"),
             size: (cap * std::mem::size_of::<i32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        // Fill slot_keys with EMPTY_KEY in chunks via queue.write_buffer.
-        // We allocate a single chunk-sized scratch, then re-use it.
-        const CHUNK_BYTES: usize = 64 * 1024; // 16K i32 entries per chunk
-        let chunk_count = CHUNK_BYTES / std::mem::size_of::<i32>();
-        let scratch: Vec<i32> = vec![EMPTY_KEY; chunk_count];
-        let scratch_bytes: &[u8] = bytemuck::cast_slice(&scratch);
-        let total_bytes = (cap * std::mem::size_of::<i32>()) as u64;
-        let mut written: u64 = 0;
-        while written < total_bytes {
-            let remaining = total_bytes - written;
-            let chunk = remaining.min(scratch_bytes.len() as u64) as usize;
-            queue.write_buffer(&slot_keys_buf, written, &scratch_bytes[..chunk]);
-            written += chunk as u64;
-        }
-
         let slot_sums_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slot_sums"),
             size: (cap * std::mem::size_of::<i32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        // sums initialize to 0; wgpu buffers without mapped_at_creation
-        // are zero-initialized by the implementation.
 
-        // Staging buffers for readback.
-        let slot_keys_stage = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("slot_keys_stage"),
-            size: (cap * std::mem::size_of::<i32>()) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
+        // Clear-uniforms for both passes (we issue two clear dispatches
+        // back-to-back: keys -> EMPTY_KEY, sums -> 0).
+        let clear_uniforms_keys = ClearUniforms { n: cap as u32, fill: EMPTY_KEY, _pad0: 0, _pad1: 0 };
+        let clear_uniforms_sums = ClearUniforms { n: cap as u32, fill: 0,         _pad0: 0, _pad1: 0 };
+        let clear_u_keys = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("clear_u_keys"),
+            contents: bytemuck::bytes_of(&clear_uniforms_keys),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
-        let slot_sums_stage = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("slot_sums_stage"),
-            size: (cap * std::mem::size_of::<i32>()) as u64,
+        let clear_u_sums = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("clear_u_sums"),
+            contents: bytemuck::bytes_of(&clear_uniforms_sums),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let clear_bg_keys = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("clear-bg-keys"),
+            layout: &self.clear_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: clear_u_keys.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: slot_keys_buf.as_entire_binding() },
+            ],
+        });
+        let clear_bg_sums = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("clear-bg-sums"),
+            layout: &self.clear_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: clear_u_sums.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: slot_sums_buf.as_entire_binding() },
+            ],
+        });
+
+        // One staging buffer for both keys and sums concatenated.
+        // Layout: [slot_keys (cap × i32) | slot_sums (cap × i32)]
+        // Single map_async => single browser round-trip (vs the previous
+        // two), which is the dominant cost on browser WebGPU.
+        let stage_size = (2 * cap * std::mem::size_of::<i32>()) as u64;
+        let combined_stage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("combined_stage"),
+            size: stage_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -293,6 +354,31 @@ impl Engine {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("group_by_sum_i32-enc"),
         });
+        // Helper: dispatch the clear kernel to fill `cap` elements.
+        let cap_total_threads = (cap as u64 + WORKGROUP_SIZE as u64 - 1) / WORKGROUP_SIZE as u64;
+        let max_dim = 65_535u64;
+        let dispatch = |pass: &mut wgpu::ComputePass<'_>, total: u64| {
+            if total <= max_dim {
+                pass.dispatch_workgroups(total as u32, 1, 1);
+            } else {
+                let gx = max_dim as u32;
+                let gy = ((total + max_dim - 1) / max_dim) as u32;
+                pass.dispatch_workgroups(gx, gy, 1);
+            }
+        };
+        // Clear pass: keys + sums in one compute pass to share command-
+        // buffer overhead.
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("clear-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.clear_pipeline);
+            pass.set_bind_group(0, &clear_bg_keys, &[]);
+            dispatch(&mut pass, cap_total_threads);
+            pass.set_bind_group(0, &clear_bg_sums, &[]);
+            dispatch(&mut pass, cap_total_threads);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("group_by_sum_i32-pass"),
@@ -300,44 +386,24 @@ impl Engine {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            // wgpu/WebGPU caps each grid dimension at 65535. Use a 2-D
-            // dispatch when we'd exceed that on x. The shader uses
-            // global_invocation_id.x only, but mapping (gx, gy) ->
-            // i = gy * MAX_X + gx is still safe because we still bounds-
-            // check `i >= n` inside the shader. We pass the same `n`
-            // uniform; rows beyond `n` simply early-return.
             let total_threads = ((n as u64) + (WORKGROUP_SIZE as u64 - 1))
                 / (WORKGROUP_SIZE as u64);
-            let max_dim = 65_535u64;
-            let workgroups = total_threads as u32;
-            if (workgroups as u64) <= max_dim {
-                pass.dispatch_workgroups(workgroups, 1, 1);
-            } else {
-                // Pick gx = max_dim, gy = ceil(total / max_dim).
-                let gx = max_dim as u32;
-                let gy = ((total_threads + max_dim - 1) / max_dim) as u32;
-                pass.dispatch_workgroups(gx, gy, 1);
-            }
+            dispatch(&mut pass, total_threads);
         }
-        encoder.copy_buffer_to_buffer(
-            &slot_keys_buf, 0, &slot_keys_stage, 0,
-            (cap * std::mem::size_of::<i32>()) as u64,
-        );
-        encoder.copy_buffer_to_buffer(
-            &slot_sums_buf, 0, &slot_sums_stage, 0,
-            (cap * std::mem::size_of::<i32>()) as u64,
-        );
+        let half = (cap * std::mem::size_of::<i32>()) as u64;
+        encoder.copy_buffer_to_buffer(&slot_keys_buf, 0, &combined_stage, 0,    half);
+        encoder.copy_buffer_to_buffer(&slot_sums_buf, 0, &combined_stage, half, half);
 
         queue.submit(Some(encoder.finish()));
 
-        // Map both staging buffers and read.
-        let keys_out = read_buffer_i32(device, &slot_keys_stage).await?;
-        let sums_out = read_buffer_i32(device, &slot_sums_stage).await?;
+        // Single mapped read.
+        let raw = read_buffer_i32(device, &combined_stage).await?;
+        let (keys_out, sums_out) = raw.split_at(cap);
 
         let mut out = Vec::new();
-        for (k, s) in keys_out.into_iter().zip(sums_out.into_iter()) {
-            if k != EMPTY_KEY {
-                out.push(GroupBySumResult { key: k, sum: s as i64 });
+        for (k, s) in keys_out.iter().zip(sums_out.iter()) {
+            if *k != EMPTY_KEY {
+                out.push(GroupBySumResult { key: *k, sum: *s as i64 });
             }
         }
         Ok(out)

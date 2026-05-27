@@ -107,6 +107,7 @@
       <option value="1000000" selected>1 M</option>
     </select>
     <button id="run">Run benchmark</button>
+    <label style="margin-left:14px"><input type="checkbox" id="compareDuck" checked> compare DuckDB-WASM</label>
     <p class="muted" style="margin-top:8px;font-size:12px">
       GPU wins big at high cardinality (≥100 K groups) and large data (≥10 M rows).
       At low cardinality (1 K groups), JS Map fits in CPU L2 cache and beats the GPU's
@@ -131,6 +132,7 @@
 
 <script type="module">
 import init, { init as wgsqlInit } from "./wgsql_wasm.js";
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
 
 const $ = id => document.getElementById(id);
 const log = (line, cls = "") => {
@@ -142,6 +144,59 @@ const log = (line, cls = "") => {
 };
 
 let engine = null;
+let duckConn = null;          // duckdb-wasm AsyncDuckDBConnection
+let duckdbReady = null;       // Promise<void> resolves when DuckDB is online
+
+async function ensureDuckDB() {
+  if (duckConn) return;
+  if (duckdbReady) return duckdbReady;
+  duckdbReady = (async () => {
+    log("[duckdb] initializing (one-shot, ~1s)…");
+    const t = performance.now();
+    const bundles = duckdb.getJsDelivrBundles();
+    const bundle = await duckdb.selectBundle(bundles);
+    const worker = await duckdb.createWorker(bundle.mainWorker);
+    const logger = new duckdb.ConsoleLogger();
+    const db = new duckdb.AsyncDuckDB(logger, worker);
+    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+    duckConn = await db.connect();
+    log(`[duckdb] ready in ${(performance.now()-t).toFixed(0)} ms`);
+  })();
+  await duckdbReady;
+}
+
+async function duckDBGroupBy(keys, values) {
+  // Time the whole pipeline: get data into DuckDB (the way a typical
+  // DuckDB-WASM user would, ingesting a 10M-row CSV), run the query,
+  // get results back. This is the apples-to-apples comparison vs
+  // wgsql's groupBySumI32(keys, values), which also takes typed arrays
+  // in and returns rows out.
+  //
+  // We measure two splits:
+  //   tIngest  - CSV register + COPY into DuckDB
+  //   tQuery   - the GROUP BY itself
+  // and return the sum as the total fair number, plus the split for
+  // transparency in the log.
+  await duckConn.query(`DROP TABLE IF EXISTS t;`);
+  await duckConn.query(`CREATE TABLE t (k INTEGER, v INTEGER);`);
+
+  const tIngestStart = performance.now();
+  const enc = new TextEncoder();
+  const lines = ["k,v"];
+  for (let i = 0; i < keys.length; i++) lines.push(keys[i] + "," + values[i]);
+  const csv = enc.encode(lines.join("\n"));
+  await duckConn.bindings.registerFileBuffer("data.csv", csv);
+  await duckConn.query(`COPY t FROM 'data.csv' (HEADER, FORMAT 'csv');`);
+  const tIngest = performance.now() - tIngestStart;
+
+  const tQueryStart = performance.now();
+  const result = await duckConn.query(`
+    SELECT k, SUM(v) AS s FROM t GROUP BY k;
+  `);
+  const tQuery = performance.now() - tQueryStart;
+
+  return { totalMs: tIngest + tQuery, ingestMs: tIngest, queryMs: tQuery, rows: result.numRows };
+}
 
 async function boot() {
   if (!("gpu" in navigator)) {
@@ -219,6 +274,24 @@ async function runBench() {
   const flat = await engine.groupBySumI32(keys, values, groups);
   const tGpu = performance.now() - t2;
 
+  // DuckDB-WASM run (lazy init on first call).
+  let duckRow = "";
+  let speedupVsDuck = null;
+  if ($("compareDuck").checked) {
+    try {
+      await ensureDuckDB();
+      const dr = await duckDBGroupBy(keys, values);
+      log(`  duckdb     ${dr.totalMs.toFixed(1)} ms (ingest ${dr.ingestMs.toFixed(0)} + query ${dr.queryMs.toFixed(0)})`);
+      duckRow = `<tr><td>DuckDB-WASM (CSV ingest + GROUP BY)</td>` +
+                `<td class="num">${dr.totalMs.toFixed(1)} ms</td>` +
+                `<td class="num">${(n / dr.totalMs / 1000).toFixed(1)} M rows/s</td></tr>`;
+      speedupVsDuck = dr.totalMs / tGpu;
+    } catch (e) {
+      log(`  duckdb     ERROR: ${e}`, "err");
+      duckRow = `<tr><td>DuckDB-WASM</td><td class="num err" colspan="2">init failed: ${e}</td></tr>`;
+    }
+  }
+
   // Validate spot checks: same number of distinct keys, and a few
   // randomly chosen sums match.
   const gpuRows = flat.length / 3;
@@ -227,7 +300,6 @@ async function runBench() {
     const k = flat[i];
     const lo = flat[i+1] >>> 0;
     const hi = flat[i+2];
-    // Reconstruct i64 via Number; values stay within safe-int.
     const gpuSum = hi * 4294967296 + lo;
     const cpuSum = cpuMap.get(k);
     if (cpuSum !== undefined && Math.abs(gpuSum - cpuSum) < 1) matches++;
@@ -240,19 +312,23 @@ async function runBench() {
   $("results-body").innerHTML = `
     <tr><td>data generation</td><td class="num">${tGen.toFixed(1)} ms</td><td class="num muted">— host</td></tr>
     <tr><td>JS baseline (Map)</td><td class="num">${tCpu.toFixed(1)} ms</td><td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
-    <tr><td>wgsql GPU</td><td class="num">${tGpu.toFixed(1)} ms</td><td class="num">${(n / tGpu / 1000).toFixed(1)} M rows/s</td></tr>
+    ${duckRow}
+    <tr><td><strong>wgsql GPU</strong></td><td class="num"><strong>${tGpu.toFixed(1)} ms</strong></td><td class="num"><strong>${(n / tGpu / 1000).toFixed(1)} M rows/s</strong></td></tr>
   `;
   const speedup = tCpu / tGpu;
   const cls = speedup >= 1 ? "ok" : "warn";
-  $("speedup").innerHTML = `
-    <strong class="${cls}">${speedup.toFixed(2)}× </strong>
-    GPU vs JS Map.&nbsp; ${correctness}
-  `;
+  let speedupHtml = `<strong class="${cls}">${speedup.toFixed(2)}× </strong> GPU vs JS Map.`;
+  if (speedupVsDuck != null) {
+    const cls2 = speedupVsDuck >= 1 ? "ok" : "warn";
+    speedupHtml += `&nbsp; <strong class="${cls2}">${speedupVsDuck.toFixed(2)}×</strong> GPU vs DuckDB-WASM.`;
+  }
+  speedupHtml += `&nbsp; ${correctness}`;
+  $("speedup").innerHTML = speedupHtml;
   $("results").style.display = "block";
 
   log(`  cpu        ${tCpu.toFixed(1)} ms (${(n/tCpu/1000).toFixed(1)} M rows/s)`);
   log(`  gpu        ${tGpu.toFixed(1)} ms (${(n/tGpu/1000).toFixed(1)} M rows/s)`);
-  log(`  speedup    ${speedup.toFixed(2)}x`);
+  log(`  speedup    ${speedup.toFixed(2)}x vs Map` + (speedupVsDuck != null ? `, ${speedupVsDuck.toFixed(2)}x vs DuckDB-WASM` : ""));
 
   $("run").disabled = false;
 }

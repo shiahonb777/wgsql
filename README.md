@@ -25,15 +25,23 @@ let rows = engine.agg_i32(&product, &amount, GroupByOptions {
 
 **https://shiahonb777.github.io/wgsql/**
 
-The default page loads a 10 M-row synthetic sales table into the GPU
-and gives you a slider. Drag it. The KPIs and the top-20 product bar
-chart update live, every frame, with `SELECT product, SUM(amount),
-COUNT(*) WHERE amount ≥ ? GROUP BY product` re-run from scratch on the
-GPU each time. ~80–120 ms typical on Chrome / M-series. No server, no
-incremental indexes.
+The demo is a side-by-side race. Same data, same query, same slider —
+**JavaScript Map running in a Web Worker on the left, wgsql GPU on the
+right**. Drag the slider; watch the lag pile up on the left while the
+right stays interactive.
 
-There's also a benchmark panel (GPU vs JS Map vs DuckDB-WASM) and a
-drag-drop Parquet box for your own files. Both run entirely in the tab.
+Four scenarios share the same WGSL kernel — only the data changes:
+
+| Scenario           | Rows   | Distinct keys | What you do                       |
+|--------------------|-------:|--------------:|-----------------------------------|
+| 🚖 NYC taxi tips   | 10 M   | 250           | Filter by minimum fare            |
+| 📈 Equity trades   | 10 M   | 5 K           | Filter by minimum trade size      |
+| 🎮 Game telemetry  | 10 M   | 100 K         | Filter by minimum damage          |
+| 🛒 Ad clicks       | 10 M   | 1 M           | Filter by minimum click value     |
+
+The page also has a benchmark panel (GPU vs JS Map vs DuckDB-WASM) and
+a drag-drop Parquet box for your own files. Both run entirely in the
+tab — nothing is uploaded.
 
 ## What this is for
 

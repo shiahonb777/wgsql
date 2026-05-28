@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wgsql — 10M-row dashboard, in your browser, on the GPU</title>
+<title>wgsql — JavaScript vs GPU, same slider, watch the lag pile up</title>
 <style>
   :root {
     --bg: #0f1115;
@@ -18,6 +18,8 @@
     --warn: #fbbf24;
     --bad:  #f87171;
     --border: #2a2f3a;
+    --left:  #f87171;
+    --right: #4ade80;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -27,10 +29,10 @@
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    padding: 24px 16px 64px;
+    padding: 20px 16px 64px;
   }
-  .wrap { max-width: 1080px; margin: 0 auto; }
-  .hero { padding: 8px 0 12px; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .hero { padding: 4px 0 12px; }
   h1 {
     font-size: 28px;
     margin: 0 0 6px;
@@ -49,14 +51,14 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 600;
-    margin: 28px 0 8px;
+    margin: 24px 0 8px;
   }
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 16px;
-    margin: 12px 0;
+    padding: 14px;
+    margin: 10px 0;
   }
   button {
     background: var(--accent);
@@ -103,46 +105,44 @@
     margin: 0;
     overflow-x: auto;
     font-size: 12px;
-    max-height: 240px;
+    max-height: 200px;
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
 
-  /* dashboard layout */
-  .kpis {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+  /* scenario tabs */
+  .tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 4px 0 8px;
   }
-  @media (max-width: 720px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
-  .kpi {
+  .tab {
     background: var(--surface-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 13.5px;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--text);
+    background: linear-gradient(135deg, rgba(106,176,255,0.15), rgba(139,92,246,0.15));
+    border-color: var(--accent);
+  }
+  .tab .scenario-emoji { margin-right: 6px; font-size: 15px; }
+  .tab .scenario-meta { color: var(--dim); font-size: 11.5px; margin-left: 8px; }
+
+  /* shared slider */
+  .slider-card {
+    background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 12px 14px;
-  }
-  .kpi .label {
-    color: var(--muted);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .kpi .value {
-    font-size: 22px;
-    font-variant-numeric: tabular-nums;
-    margin-top: 4px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
-  .controls-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 12px;
-    align-items: center;
-    margin-bottom: 10px;
+    padding: 14px 16px;
   }
   .slider-row {
     display: flex;
@@ -152,47 +152,157 @@
   .slider-row input[type=range] {
     flex: 1;
     accent-color: var(--accent);
+    height: 6px;
   }
   .pill {
     display: inline-block;
     background: var(--surface-2);
     color: var(--accent);
     border-radius: 999px;
-    padding: 2px 10px;
-    font-size: 11px;
+    padding: 3px 12px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     border: 1px solid var(--border);
+    min-width: 90px;
+    text-align: center;
   }
-  .pill.warn { color: var(--warn); }
-  .pill.good { color: var(--good); }
+  .moves-counter {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 6px;
+  }
+  .moves-counter b { color: var(--text); }
+
+  /* split panels */
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  @media (max-width: 880px) { .split { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    position: relative;
+    overflow: hidden;
+  }
+  .panel.left  { border-top: 3px solid var(--left);  }
+  .panel.right { border-top: 3px solid var(--right); }
+  .panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .panel-title {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .panel.left  .panel-title { color: var(--left); }
+  .panel.right .panel-title { color: var(--right); }
+  .panel-sub { color: var(--muted); font-size: 12px; }
+
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .kpi {
+    background: var(--surface-2);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .kpi .label {
+    color: var(--muted);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .kpi .value {
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+    margin-top: 2px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .latency-bar {
+    background: var(--surface-2);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .latency-bar .lat-label { color: var(--muted); }
+  .latency-bar .lat-value { font-weight: 600; }
+  .latency-bar.lag-warn { background: rgba(248,113,113,0.12); }
+  .latency-bar .lag-counter { color: var(--bad); font-weight: 600; }
 
   .bars { width: 100%; }
   .bar {
     display: grid;
-    grid-template-columns: 80px 1fr 100px;
+    grid-template-columns: 90px 1fr 80px;
     gap: 8px;
     align-items: center;
-    padding: 3px 0;
+    padding: 2.5px 0;
     font-variant-numeric: tabular-nums;
-    font-size: 12.5px;
-  }
-  .bar .k { color: var(--muted); }
-  .bar .b {
-    height: 14px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
-    border-radius: 3px;
-  }
-  .bar .v { text-align: right; font-weight: 500; }
-
-  .latency {
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
     font-size: 12px;
   }
-  .latency b { color: var(--good); font-weight: 600; }
+  .bar .k { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar .b {
+    height: 12px;
+    border-radius: 3px;
+    transition: width 0.08s ease-out;
+  }
+  .panel.left  .bar .b { background: linear-gradient(90deg, var(--left), #fb7185); }
+  .panel.right .bar .b { background: linear-gradient(90deg, var(--right), #34d399); }
+  .bar .v { text-align: right; }
+
+  .stale-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(15,17,21,0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--bad);
+    font-size: 12.5px;
+    font-weight: 600;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .stale-overlay.visible { opacity: 1; }
 
   .links { color: var(--muted); font-size: 13px; }
   .links a { margin-right: 14px; }
+
+  .scenario-desc {
+    color: var(--muted);
+    font-size: 12.5px;
+    margin: 6px 0 0;
+  }
+
+  .winner-banner {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: linear-gradient(135deg, rgba(74,222,128,0.08), rgba(106,176,255,0.08));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .winner-banner b { color: var(--right); font-size: 18px; }
 </style>
 </head>
 <body>
@@ -200,75 +310,95 @@
 
   <header class="hero">
     <h1>wgsql</h1>
-    <p>Build dashboards that handle <b>10 million rows</b> without lag, on
-       any GPU, in any browser. Your data never leaves the device.</p>
-    <p>One WGSL compute kernel. WebGPU-native. MIT.
-       <span class="dim">~388 KB wasm, no server, no upload.</span></p>
-    <p class="links" style="margin-top:8px">
-      <a href="https://github.com/shiahonb777/wgsql" target="_blank">GitHub</a>
-      <a href="#benchmark">Benchmark</a>
-      <a href="#parquet">Run on your file</a>
-    </p>
+    <p>Same data. Same query. Same slider. <b style="color:var(--left)">JavaScript Map</b>
+       in a Web Worker on the left, <b style="color:var(--right)">wgsql GPU</b>
+       on the right. Drag the slider — watch the lag pile up.</p>
+    <p>10 million rows, in your browser, on your GPU. ~388 KB wasm, no server, no upload.
+       <a href="https://github.com/shiahonb777/wgsql" target="_blank">GitHub</a> ·
+       <a href="#benchmark">Benchmark</a> ·
+       <a href="#parquet">Run on your file</a></p>
   </header>
 
   <div class="card" id="boot-card">
     <div id="status">checking WebGPU support…</div>
   </div>
 
-  <h2>Live dashboard · 10 M rows · synthetic sales</h2>
-  <div class="card" id="dashboard" style="display:none">
-    <div class="kpis">
-      <div class="kpi">
-        <div class="label">rows after filter</div>
-        <div class="value" id="kpi-rows">—</div>
-        <div class="sub" id="kpi-rows-sub">of 10,000,000</div>
+  <div id="dashboard" style="display:none">
+    <h2>Pick a scenario · all driven by the same WGSL kernel</h2>
+    <div class="tabs" id="tabs"></div>
+    <p class="scenario-desc" id="scenario-desc"></p>
+
+    <div class="slider-card" style="margin-top:10px">
+      <div class="slider-row">
+        <label id="slider-label">slider</label>
+        <span class="pill" id="slider-pill">—</span>
+        <input type="range" id="slider" min="0" max="1000" step="1" value="0">
       </div>
-      <div class="kpi">
-        <div class="label">total revenue</div>
-        <div class="value" id="kpi-rev">—</div>
-        <div class="sub" id="kpi-rev-sub">SUM(amount)</div>
-      </div>
-      <div class="kpi">
-        <div class="label">avg per order</div>
-        <div class="value" id="kpi-avg">—</div>
-        <div class="sub" id="kpi-avg-sub">SUM / COUNT</div>
-      </div>
-      <div class="kpi">
-        <div class="label">GPU compute</div>
-        <div class="value" id="kpi-gpu">—</div>
-        <div class="sub" id="kpi-gpu-sub">over <span id="kpi-distinct">—</span> distinct products</div>
+      <div class="moves-counter">
+        slider moved <b id="moves-count">0</b> times ·
+        <span style="color:var(--left)">left frames</span> done <b id="left-frames">0</b> ·
+        <span style="color:var(--right)">right frames</span> done <b id="right-frames">0</b>
       </div>
     </div>
 
-    <div style="margin-top:18px">
-      <div class="controls-row">
-        <div class="slider-row">
-          <label>min amount ≥</label>
-          <span class="pill" id="amount-pill">0</span>
-          <input type="range" id="amount-slider" min="0" max="1000" step="1" value="0">
+    <div class="split">
+      <div class="panel left">
+        <div class="panel-head">
+          <div class="panel-title">JavaScript Map · Web Worker</div>
+          <div class="panel-sub" id="left-sub">CPU thread, never blocks UI</div>
         </div>
-        <div>
-          <label>region</label>
-          <select id="region-select">
-            <option value="-1" selected>all (64)</option>
-          </select>
+        <div class="latency-bar" id="left-latency">
+          <div><span class="lat-label">last frame</span> · <span class="lat-value" id="left-ms">—</span></div>
+          <div id="left-lag"></div>
         </div>
+        <div class="kpi-row">
+          <div class="kpi">
+            <div class="label" id="left-k1-label">total</div>
+            <div class="value" id="left-k1">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">rows</div>
+            <div class="value" id="left-k2">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">groups</div>
+            <div class="value" id="left-k3">—</div>
+          </div>
+        </div>
+        <div class="bars" id="left-bars"></div>
       </div>
-      <p class="muted" style="font-size:12.5px; margin: 4px 0 0">
-        Drag the slider. The GPU re-runs <code>SELECT product, SUM(amount), COUNT(*) WHERE amount &ge; ? GROUP BY product</code>
-        live (~<span id="latency-typ">100 ms</span> typical) on every move. No server, no
-        client-side rebuild, no incremental indexes — the kernel just chews through 10 M rows.
-      </p>
+
+      <div class="panel right">
+        <div class="panel-head">
+          <div class="panel-title">wgsql · WebGPU</div>
+          <div class="panel-sub" id="right-sub">GPU compute, fused WHERE</div>
+        </div>
+        <div class="latency-bar" id="right-latency">
+          <div><span class="lat-label">last frame</span> · <span class="lat-value" id="right-ms">—</span></div>
+          <div id="right-lag"></div>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi">
+            <div class="label" id="right-k1-label">total</div>
+            <div class="value" id="right-k1">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">rows</div>
+            <div class="value" id="right-k2">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">groups</div>
+            <div class="value" id="right-k3">—</div>
+          </div>
+        </div>
+        <div class="bars" id="right-bars"></div>
+      </div>
     </div>
 
-    <div style="margin-top:18px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <div class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:0.06em">
-          Top 20 products by revenue
-        </div>
-        <div class="latency" id="latency">—</div>
-      </div>
-      <div class="bars" id="bars"></div>
+    <div class="winner-banner" id="winner-banner" style="display:none">
+      <span class="muted">live speedup</span> &nbsp;
+      <b id="winner-x">—</b>
+      &nbsp; <span class="muted" id="winner-detail"></span>
     </div>
   </div>
 
@@ -278,7 +408,6 @@
       Same query (<code>SELECT k, SUM(v) GROUP BY k</code>) on synthetic data,
       against three browser-native baselines. wgsql wins big when distinct
       groups are large enough that a <code>Map</code> stops fitting in CPU L2 cache.
-      That's almost every real OLAP workload.
     </p>
     <div>
       <label>n =</label>
@@ -307,7 +436,7 @@
     </div>
   </div>
 
-  <h2 id="parquet">Run on your own file · stays on your device</h2>
+  <h2 id="parquet">Run on your own Parquet · file stays on your device</h2>
   <div class="card">
     <p class="muted" style="font-size:12.5px;margin:0 0 8px">
       Drop a Parquet. We pick the first two integer columns (or you can name
@@ -362,14 +491,18 @@ const fmt = {
                   : n >= 1e6 ? (n/1e6).toFixed(2) + "M"
                   : n >= 1e3 ? (n/1e3).toFixed(1) + "K"
                   : n.toFixed(0)),
+  num: n => n >= 1e9 ? (n/1e9).toFixed(2) + "B"
+          : n >= 1e6 ? (n/1e6).toFixed(2) + "M"
+          : n >= 1e3 ? (n/1e3).toFixed(1) + "K"
+          : n.toFixed(0),
   ms: n => n < 10 ? n.toFixed(1) + " ms"
           : n < 1000 ? n.toFixed(0) + " ms"
           : (n/1000).toFixed(2) + " s",
 };
 
 let engine = null;
-let duckConn = null;          // duckdb-wasm AsyncDuckDBConnection
-let duckdbReady = null;       // Promise<void> resolves when DuckDB is online
+let duckConn = null;
+let duckdbReady = null;
 
 async function ensureDuckDB() {
   if (duckConn) return;
@@ -419,7 +552,7 @@ async function boot() {
     return;
   }
   $("status").textContent = "loading WASM module…";
-  await init();              // wasm-bindgen module initializer
+  await init();
   log("[boot] wasm module loaded");
   try {
     engine = await wgsqlInit();
@@ -433,14 +566,377 @@ async function boot() {
     "<code>" + engine.backend + "</code> / " +
     "<code>" + engine.adapterName + "</code>";
   $("bench-card").style.display = "block";
+  $("dashboard").style.display = "block";
   log("[boot] backend=" + engine.backend + " adapter=" + engine.adapterName);
 
-  // Generate the dashboard dataset, render the dashboard, and run the
-  // first query.
-  await initDashboard();
+  initScenarios();
+  await selectScenario(0);
 }
 
-// Deterministic xorshift32 so we can reproduce numbers locally.
+// ---------- Scenarios ----------
+//
+// Each scenario is a self-contained dataset description: how to
+// generate the columns, what the slider filters, what the bars and
+// KPIs should display. The GPU kernel is always the same; only the
+// data and the labels change.
+
+const SCENARIOS = [
+  {
+    id: "taxi",
+    emoji: "🚖",
+    title: "NYC taxi tips",
+    meta: "10 M trips · 250 zones",
+    desc: "Drag to filter by minimum fare. Bars show top tipping pickup zones. " +
+          "What feels obvious — 'show me only large fares' — usually triggers a full table rescan.",
+    n: 10_000_000,
+    distinct: 250,
+    sliderLabel: "min fare ≥",
+    sliderMax: 80,
+    sliderUnit: "$",
+    keyName: "zone",
+    keyKind: "zone",
+    valueRange: 80,         // values 0..80 (fare in dollars)
+    sumLabel: "tips total",
+    sumKind: "money",
+  },
+  {
+    id: "stocks",
+    emoji: "📈",
+    title: "Equity trades",
+    meta: "10 M trades · 5 K tickers",
+    desc: "Drag to filter by minimum trade size. Bars show top tickers by traded notional. " +
+          "5 K distinct tickers — well past where a JS Map fits in cache.",
+    n: 10_000_000,
+    distinct: 5_000,
+    sliderLabel: "min trade size ≥",
+    sliderMax: 1000,
+    sliderUnit: "$",
+    keyName: "ticker",
+    keyKind: "ticker",
+    valueRange: 1000,
+    sumLabel: "notional",
+    sumKind: "money",
+  },
+  {
+    id: "game",
+    emoji: "🎮",
+    title: "Game telemetry",
+    meta: "10 M events · 100 K players",
+    desc: "Drag to filter by minimum damage dealt per event. Bars show top damage players. " +
+          "100 K distinct players × 10 M events is the regime where dashboards stop being interactive.",
+    n: 10_000_000,
+    distinct: 100_000,
+    sliderLabel: "min damage ≥",
+    sliderMax: 500,
+    sliderUnit: "",
+    keyName: "player",
+    keyKind: "player",
+    valueRange: 500,
+    sumLabel: "damage total",
+    sumKind: "num",
+  },
+  {
+    id: "ads",
+    emoji: "🛒",
+    title: "Ad clicks",
+    meta: "10 M events · 1 M users",
+    desc: "Drag to filter by minimum click value (cents). Bars show top users by spend. " +
+          "1 M distinct users is where the JS Map's hash table stops fitting anywhere useful.",
+    n: 10_000_000,
+    distinct: 1_000_000,
+    sliderLabel: "min click value ≥",
+    sliderMax: 200,
+    sliderUnit: "¢",
+    keyName: "user",
+    keyKind: "user",
+    valueRange: 200,
+    sumLabel: "spend total",
+    sumKind: "money",
+  },
+];
+
+let currentScenario = 0;
+let datasetKeys = null;     // Int32Array
+let datasetValues = null;   // Int32Array
+
+function initScenarios() {
+  const tabs = $("tabs");
+  for (let i = 0; i < SCENARIOS.length; i++) {
+    const s = SCENARIOS[i];
+    const tab = document.createElement("div");
+    tab.className = "tab" + (i === 0 ? " active" : "");
+    tab.dataset.idx = String(i);
+    tab.innerHTML = `<span class="scenario-emoji">${s.emoji}</span>` +
+                    `<span>${s.title}</span>` +
+                    `<span class="scenario-meta">${s.meta}</span>`;
+    tab.addEventListener("click", () => selectScenario(i));
+    tabs.appendChild(tab);
+  }
+}
+
+// xorshift32 deterministic generator with two independent streams.
+function generateScenarioData(scn) {
+  const n = scn.n;
+  const keys = new Int32Array(n);
+  const values = new Int32Array(n);
+  let x = 0x1234567 | 0;
+  let y = 0x76543210 | 0;
+  for (let i = 0; i < n; i++) {
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    y ^= y << 13; y ^= y >>> 17; y ^= y << 5;
+    keys[i] = (x >>> 0) % scn.distinct;
+    values[i] = (y >>> 0) % scn.valueRange;
+  }
+  return { keys, values };
+}
+
+function formatKey(scn, k) {
+  switch (scn.keyKind) {
+    case "ticker": {
+      // Make a fake ticker like 'AAPL' from k.
+      const A = "A".charCodeAt(0);
+      const a = String.fromCharCode(A + (k % 26));
+      const b = String.fromCharCode(A + ((k / 26 | 0) % 26));
+      const c = String.fromCharCode(A + ((k / 676 | 0) % 26));
+      return a + b + c;
+    }
+    case "zone": return "zone " + k;
+    case "player": return "p" + k;
+    case "user": return "u" + k;
+    default: return String(k);
+  }
+}
+
+function formatSum(scn, n) {
+  return scn.sumKind === "money" ? fmt.money(n) : fmt.num(n);
+}
+
+// ---------- Driver: shared slider, two engines, accurate lag ----------
+
+const state = {
+  sliderValue: 0,
+  movesCount: 0,
+  leftFrames: 0,
+  rightFrames: 0,
+  // Per-side tracking of "what slider value did the most recent frame compute for?"
+  // The lag is movesCount minus the frame's slider value index... but simpler:
+  // we compare the frame's slider value to the latest user input. If they match,
+  // up-to-date; if not, lagging.
+  leftLatestSliderForFrame: null,
+  rightLatestSliderForFrame: null,
+  leftMs: 0,
+  rightMs: 0,
+  jsWorker: null,
+  // GPU loop control
+  gpuRunning: false,
+  gpuPendingValue: null,   // most recent slider value that hasn't been processed
+};
+
+let scenarioLoading = false;
+
+async function selectScenario(idx) {
+  if (scenarioLoading) return;
+  scenarioLoading = true;
+  for (const t of $("tabs").children) t.classList.remove("active");
+  $("tabs").children[idx].classList.add("active");
+
+  const scn = SCENARIOS[idx];
+  currentScenario = idx;
+  $("scenario-desc").textContent = scn.desc;
+  $("slider-label").textContent = scn.sliderLabel;
+  $("slider").max = String(scn.sliderMax);
+  $("slider").value = "0";
+  $("slider-pill").textContent =
+    (scn.sliderUnit === "$" ? "$" : scn.sliderUnit === "¢" ? "¢" : "") +
+    "0" +
+    (scn.sliderUnit && scn.sliderUnit !== "$" && scn.sliderUnit !== "¢" ? " " + scn.sliderUnit : "");
+  $("left-k1-label").textContent = scn.sumLabel;
+  $("right-k1-label").textContent = scn.sumLabel;
+  $("left-bars").innerHTML = "";
+  $("right-bars").innerHTML = "";
+
+  log(`[scn] loading "${scn.title}" (${fmt.int(scn.n)} rows × ${fmt.int(scn.distinct)} groups)`);
+
+  const t = performance.now();
+  const { keys, values } = generateScenarioData(scn);
+  log(`[scn] generated in ${(performance.now()-t).toFixed(0)} ms`);
+  datasetKeys = keys;
+  datasetValues = values;
+
+  // Reset counters for fair UX.
+  state.sliderValue = 0;
+  state.movesCount = 0;
+  state.leftFrames = 0;
+  state.rightFrames = 0;
+  state.leftLatestSliderForFrame = null;
+  state.rightLatestSliderForFrame = null;
+  state.leftMs = 0;
+  state.rightMs = 0;
+  state.gpuRunning = false;
+  state.gpuPendingValue = 0;
+  updateMoves();
+
+  // Hand a copy to the JS worker. We send a *copy* (not transferable)
+  // because we still need the data on the main thread for the GPU.
+  if (!state.jsWorker) {
+    state.jsWorker = new Worker(new URL("./js_worker.js", import.meta.url));
+    state.jsWorker.onmessage = onWorkerMessage;
+  }
+  state.jsWorker.postMessage({
+    type: "scenario",
+    keys: new Int32Array(keys),
+    values: new Int32Array(values),
+    sliderValue: 0,
+  });
+
+  // Run an initial GPU frame so the panel isn't empty.
+  state.gpuPendingValue = 0;
+  if (!state.gpuRunning) gpuLoop();
+
+  scenarioLoading = false;
+}
+
+function onWorkerMessage(e) {
+  const m = e.data;
+  if (m.type !== "result") return;
+  state.leftFrames += 1;
+  state.leftMs = m.ms;
+  state.leftLatestSliderForFrame = m.sliderValue;
+  renderPanel("left", m);
+  updateMoves();
+}
+
+async function gpuLoop() {
+  state.gpuRunning = true;
+  while (state.gpuPendingValue !== null) {
+    const sliderAtStart = state.gpuPendingValue;
+    state.gpuPendingValue = null;
+    const scn = SCENARIOS[currentScenario];
+    const filter = sliderAtStart > 0 ? { op: "ge", threshold: sliderAtStart } : null;
+    const t0 = performance.now();
+    const flat = await engine.aggI32(datasetKeys, datasetValues, scn.distinct, filter);
+    const ms = performance.now() - t0;
+    // Layout: per row [k, sum_lo, sum_hi, count_lo, count_hi, min, max]
+    const stride = 7;
+    const rowCount = flat.length / stride;
+    let totalSum = 0;
+    let totalCount = 0;
+    const rows = [];
+    for (let i = 0; i < rowCount; i++) {
+      const off = i * stride;
+      const sum = (flat[off+2] * 4294967296) + (flat[off+1] >>> 0);
+      const count = (flat[off+4] * 4294967296) + (flat[off+3] >>> 0);
+      rows.push({ key: flat[off], sum, count });
+      totalSum += sum;
+      totalCount += count;
+    }
+    rows.sort((a, b) => b.sum - a.sum);
+    state.rightFrames += 1;
+    state.rightMs = ms;
+    state.rightLatestSliderForFrame = sliderAtStart;
+    renderPanel("right", {
+      sliderValue: sliderAtStart,
+      totalSum,
+      totalCount,
+      distinct: rowCount,
+      top: rows.slice(0, 20),
+      ms,
+    });
+    updateMoves();
+    // Yield so input events drain.
+    await new Promise(r => setTimeout(r, 0));
+  }
+  state.gpuRunning = false;
+}
+
+function renderPanel(side, m) {
+  const scn = SCENARIOS[currentScenario];
+  $(`${side}-ms`).textContent = fmt.ms(m.ms);
+  $(`${side}-k1`).textContent = formatSum(scn, m.totalSum);
+  $(`${side}-k2`).textContent = fmt.int(m.totalCount);
+  $(`${side}-k3`).textContent = fmt.int(m.distinct);
+
+  const bars = $(`${side}-bars`);
+  bars.innerHTML = "";
+  const top = m.top;
+  const max = top.length > 0 ? top[0].sum : 1;
+  for (const r of top) {
+    const row = document.createElement("div");
+    row.className = "bar";
+    row.innerHTML =
+      `<span class="k">${formatKey(scn, r.key)}</span>` +
+      `<div><div class="b" style="width:${max > 0 ? (r.sum/max*100).toFixed(1) : 0}%"></div></div>` +
+      `<span class="v">${formatSum(scn, r.sum)}</span>`;
+    bars.appendChild(row);
+  }
+  if (top.length === 0) {
+    bars.innerHTML = `<div class="muted" style="padding:12px;text-align:center;font-size:12px">no rows match this filter</div>`;
+  }
+}
+
+function updateMoves() {
+  $("moves-count").textContent = String(state.movesCount);
+  $("left-frames").textContent = String(state.leftFrames);
+  $("right-frames").textContent = String(state.rightFrames);
+
+  // Lag = how far behind the latest user slider value the panel is.
+  const left = state.leftLatestSliderForFrame;
+  const right = state.rightLatestSliderForFrame;
+  const cur = state.sliderValue;
+
+  const leftLagged = left !== null && left !== cur;
+  const rightLagged = right !== null && right !== cur;
+
+  const leftLagEl = $("left-lag");
+  const rightLagEl = $("right-lag");
+  if (leftLagged) {
+    $("left-latency").classList.add("lag-warn");
+    leftLagEl.innerHTML = `<span class="lag-counter">stale · still computing</span>`;
+  } else {
+    $("left-latency").classList.remove("lag-warn");
+    leftLagEl.innerHTML = `<span class="ok" style="font-size:12px">live</span>`;
+  }
+  if (rightLagged) {
+    $("right-latency").classList.add("lag-warn");
+    rightLagEl.innerHTML = `<span class="lag-counter">stale</span>`;
+  } else {
+    $("right-latency").classList.remove("lag-warn");
+    rightLagEl.innerHTML = `<span class="ok" style="font-size:12px">live</span>`;
+  }
+
+  // Speedup banner.
+  if (state.leftMs > 0 && state.rightMs > 0) {
+    const x = state.leftMs / state.rightMs;
+    $("winner-banner").style.display = "block";
+    $("winner-x").textContent = x.toFixed(1) + "× faster";
+    $("winner-detail").textContent =
+      `(JS Map: ${fmt.ms(state.leftMs)} · wgsql GPU: ${fmt.ms(state.rightMs)} per frame)`;
+  }
+}
+
+// Hook the slider once.
+$("slider").addEventListener("input", e => {
+  const v = parseInt(e.target.value, 10);
+  state.sliderValue = v;
+  state.movesCount += 1;
+  const scn = SCENARIOS[currentScenario];
+  $("slider-pill").textContent =
+    (scn.sliderUnit === "$" ? "$" : scn.sliderUnit === "¢" ? "¢" : "") +
+    String(v) +
+    (scn.sliderUnit && scn.sliderUnit !== "$" && scn.sliderUnit !== "¢" ? " " + scn.sliderUnit : "");
+
+  // Tell the JS worker.
+  if (state.jsWorker) state.jsWorker.postMessage({ type: "setSlider", value: v });
+
+  // Schedule a GPU run for this slider value (the loop coalesces).
+  state.gpuPendingValue = v;
+  if (!state.gpuRunning) gpuLoop().catch(err => log("ERROR: " + err, "err"));
+
+  updateMoves();
+});
+
+// ---------- Benchmark panel (kept) ----------
+
 function makeData(n, gMod) {
   const keys = new Int32Array(n);
   const values = new Int32Array(n);
@@ -454,7 +950,7 @@ function makeData(n, gMod) {
   return { keys, values };
 }
 
-function jsBaseline(keys, values) {
+function jsBaselineMain(keys, values) {
   const acc = new Map();
   const n = keys.length;
   for (let i = 0; i < n; i++) {
@@ -463,193 +959,6 @@ function jsBaseline(keys, values) {
   }
   return acc;
 }
-
-// ---------- Dashboard ----------
-
-const DASH = {
-  N: 10_000_000,
-  PRODUCTS: 1024,         // distinct group keys
-  REGIONS: 64,            // for filter dropdown (UI prefilter)
-  AMOUNT_MAX: 1000,
-};
-
-let dash = {
-  product: null,        // Int32Array length N, in [0, PRODUCTS)
-  amount: null,         // Int32Array length N, in [0, AMOUNT_MAX)
-  region: null,         // Int32Array length N, in [0, REGIONS)
-  // After region filter: cached views
-  productView: null,
-  amountView: null,
-  currentRegion: -1,
-};
-
-let dashScheduled = false;
-let dashRunning = false;
-let dashLastRun = 0;
-
-async function initDashboard() {
-  log(`[dash] generating ${fmt.int(DASH.N)} rows …`);
-  const t = performance.now();
-  // Three columns. Use independent xorshift streams to avoid correlation.
-  const product = new Int32Array(DASH.N);
-  const amount  = new Int32Array(DASH.N);
-  const region  = new Int32Array(DASH.N);
-  let x = 0x1234567 | 0;
-  let y = 0x76543210 | 0;
-  let z = 0x0BADBEEF | 0;
-  for (let i = 0; i < DASH.N; i++) {
-    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-    y ^= y << 13; y ^= y >>> 17; y ^= y << 5;
-    z ^= z << 13; z ^= z >>> 17; z ^= z << 5;
-    product[i] = (x >>> 0) % DASH.PRODUCTS;
-    amount[i]  = (y >>> 0) % DASH.AMOUNT_MAX;
-    region[i]  = (z >>> 0) % DASH.REGIONS;
-  }
-  log(`[dash] generated in ${(performance.now()-t).toFixed(0)} ms`);
-
-  dash.product = product;
-  dash.amount = amount;
-  dash.region = region;
-  dash.productView = product;
-  dash.amountView = amount;
-  dash.currentRegion = -1;
-
-  // Region selector
-  const regionSel = $("region-select");
-  for (let r = 0; r < DASH.REGIONS; r++) {
-    const opt = document.createElement("option");
-    opt.value = String(r);
-    opt.textContent = "region " + r;
-    regionSel.appendChild(opt);
-  }
-
-  $("dashboard").style.display = "block";
-  $("kpi-distinct").textContent = fmt.int(DASH.PRODUCTS);
-
-  // Hook controls
-  $("amount-slider").addEventListener("input", e => {
-    $("amount-pill").textContent = "≥ " + e.target.value;
-    scheduleDashRun();
-  });
-  regionSel.addEventListener("change", () => {
-    rebuildRegionView();
-    scheduleDashRun();
-  });
-
-  // Initial run
-  await runDash();
-}
-
-function rebuildRegionView() {
-  const r = parseInt($("region-select").value, 10);
-  if (r === dash.currentRegion) return;
-  dash.currentRegion = r;
-  if (r < 0) {
-    dash.productView = dash.product;
-    dash.amountView = dash.amount;
-    return;
-  }
-  // Pre-filter by region on the CPU side. This is a one-time cost per
-  // region change and lets the GPU run a cleaner, smaller GROUP BY.
-  const { product, amount, region } = dash;
-  let count = 0;
-  for (let i = 0; i < region.length; i++) if (region[i] === r) count++;
-  const p = new Int32Array(count);
-  const a = new Int32Array(count);
-  let j = 0;
-  for (let i = 0; i < region.length; i++) {
-    if (region[i] === r) { p[j] = product[i]; a[j] = amount[i]; j++; }
-  }
-  dash.productView = p;
-  dash.amountView  = a;
-}
-
-function scheduleDashRun() {
-  if (dashScheduled) return;
-  dashScheduled = true;
-  // Coalesce input events to ~16 ms (one frame) so a fast drag fires
-  // one query, not 200.
-  setTimeout(() => {
-    dashScheduled = false;
-    if (dashRunning) {
-      // queue one more after the current finishes
-      dashLastRun = -1;
-    } else {
-      runDash().catch(e => log("ERROR: " + e, "err"));
-    }
-  }, 16);
-}
-
-async function runDash() {
-  if (!engine) return;
-  dashRunning = true;
-  const minAmount = parseInt($("amount-slider").value, 10);
-  const keys = dash.productView;
-  const values = dash.amountView;
-
-  const t0 = performance.now();
-  const filter = minAmount > 0 ? { op: "ge", threshold: minAmount } : null;
-  const flat = await engine.aggI32(keys, values, DASH.PRODUCTS, filter);
-  const tGpu = performance.now() - t0;
-
-  // Layout: per row [k, sum_lo, sum_hi, count_lo, count_hi, min, max]
-  const stride = 7;
-  const rowCount = flat.length / stride;
-  let totalSum = 0;
-  let totalCount = 0;
-  // Top-K with a small partial sort (rowCount <= 1024 here).
-  const rows = new Array(rowCount);
-  for (let i = 0; i < rowCount; i++) {
-    const off = i * stride;
-    const key = flat[off];
-    const sum = (flat[off+2] * 4294967296) + (flat[off+1] >>> 0);
-    const count = (flat[off+4] * 4294967296) + (flat[off+3] >>> 0);
-    rows[i] = { key, sum, count };
-    totalSum += sum;
-    totalCount += count;
-  }
-  rows.sort((a, b) => b.sum - a.sum);
-
-  // KPIs
-  $("kpi-rows").textContent = fmt.int(totalCount);
-  $("kpi-rows-sub").textContent =
-    `of ${fmt.int(keys.length)}` +
-    (dash.currentRegion >= 0 ? ` (region ${dash.currentRegion})` : "");
-  $("kpi-rev").textContent = fmt.money(totalSum);
-  $("kpi-avg").textContent = totalCount > 0 ? fmt.money(totalSum / totalCount) : "—";
-  $("kpi-gpu").textContent = fmt.ms(tGpu);
-  $("kpi-distinct").textContent = fmt.int(rowCount);
-
-  // Bar chart: top 20 products by revenue
-  const top = rows.slice(0, 20);
-  const max = top.length > 0 ? top[0].sum : 1;
-  const bars = $("bars");
-  bars.innerHTML = "";
-  for (const r of top) {
-    const row = document.createElement("div");
-    row.className = "bar";
-    row.innerHTML =
-      `<span class="k">product ${r.key}</span>` +
-      `<div><div class="b" style="width:${(r.sum/max*100).toFixed(1)}%"></div></div>` +
-      `<span class="v">${fmt.money(r.sum)}</span>`;
-    bars.appendChild(row);
-  }
-  if (top.length === 0) {
-    bars.innerHTML = `<div class="muted" style="padding:12px;text-align:center">no rows match this filter</div>`;
-  }
-
-  $("latency").innerHTML =
-    `GPU GROUP BY (${rowCount} groups, ${fmt.int(keys.length)} rows scanned, filter ${filter ? "amount &ge; " + filter.threshold : "none"}): <b>${fmt.ms(tGpu)}</b>`;
-
-  dashRunning = false;
-  // If a user input arrived during execution, run again.
-  if (dashLastRun === -1) {
-    dashLastRun = 0;
-    runDash();
-  }
-}
-
-// ---------- Benchmark (existing) ----------
 
 async function runBench() {
   const n = parseInt($("n").value, 10);
@@ -665,7 +974,7 @@ async function runBench() {
   log(`  gen        ${tGen.toFixed(1)} ms`);
 
   const t1 = performance.now();
-  const cpuMap = jsBaseline(keys, values);
+  const cpuMap = jsBaselineMain(keys, values);
   const tCpu = performance.now() - t1;
 
   const t2 = performance.now();
@@ -730,7 +1039,7 @@ async function runBench() {
 
 $("run").addEventListener("click", () => { runBench().catch(e => log("ERROR: " + e, "err")); });
 
-// ---------- Parquet upload ----------
+// ---------- Parquet upload (kept) ----------
 
 let loadedParquet = null;
 
@@ -799,7 +1108,7 @@ async function runFileBench() {
   log(`[fileRun] estimated distinct ≈ ${groupHint.toLocaleString()}`);
 
   const t1 = performance.now();
-  const cpu = jsBaseline(keys, values);
+  const cpu = jsBaselineMain(keys, values);
   const tCpu = performance.now() - t1;
 
   const t2 = performance.now();

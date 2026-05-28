@@ -5,35 +5,35 @@ day-of, then post.
 
 ## Headline
 
-> **wgsql** lets your dashboard scrub through 10 million rows
-> interactively in the browser, on the user's GPU. No backend, no
-> upload. ~388 KB wasm.
+> **wgsql** runs SQL GROUP BY on the user's GPU through WebGPU.
+> JavaScript on the left, wgsql on the right, same slider — watch the
+> lag pile up. 10 M rows, in the browser, no server.
 
 ## Twitter thread
 
 **1/**
-> Most "browser dashboards" choke past ~1M rows because every filter
-> rebuild runs through `Array.reduce`.
+> "Just put your dashboard in a Web Worker, JS is fast enough."
 >
-> wgsql runs SQL GROUP BY + WHERE on the user's GPU through WebGPU.
-> 10M rows. Drag a slider. The chart updates in 80–120ms.
+> Same query. Same data. Same slider. JS Map (in a worker) on the left,
+> wgsql GPU on the right. 10M rows.
+>
+> Drag the slider. Watch what happens.
 >
 > Demo: https://shiahonb777.github.io/wgsql/
 
 **2/**
-> The whole engine is a single WGSL compute kernel: open-address
-> linear-probe hash table, atomic CAS on the key, atomicAdd on the sum.
-> WHERE is fused into the same pass — so a slider drag is one kernel
-> dispatch, not three.
->
-> Same kernel runs on Metal, DX12, Vulkan, WebGPU. ~300 lines.
+> Four scenarios — taxi tips, equity trades, game telemetry, ad clicks —
+> all driven by the same WGSL kernel. The only thing that changes is
+> the data and the labels. The GPU stays interactive past 1M distinct
+> groups; the JS Map can't.
 
 **3/**
-> What it's good for:
-> • client-side BI / dashboards that need to stay smooth at 10M rows
-> • private analytics — healthcare, finance, internal HR — where data
->   shouldn't leave the device
-> • embeddable BI in SaaS without a backend per customer
+> The whole engine is one WGSL compute kernel: open-address linear-probe
+> hash table, atomic CAS on the key, atomicAdd on the sum. WHERE is
+> fused into the same pass — slider drag = one kernel dispatch, not
+> three.
+>
+> Same kernel runs on Metal, DX12, Vulkan, WebGPU. ~300 lines of code.
 
 **4/**
 > Honest numbers (M4 Pro / Chrome 138 / 10M rows × 1M groups):
@@ -42,19 +42,19 @@ day-of, then post.
 > • wgsql GPU: 111ms
 >
 > 8.1× over JS Map. At low cardinality (1K groups), JS Map fits in L2
-> and beats us. We don't pretend otherwise.
+> cache and beats us. The README says so.
 
 **5/**
 > Source: github.com/shiahonb777/wgsql
 > Demo:   shiahonb777.github.io/wgsql/
-> MIT, v0.1.
+> MIT, v0.1, ~388 KB wasm.
 >
 > Roadmap: i64/f32/string keys, OUTER JOIN, Parquet zero-copy, full SQL
-> parser. Feedback welcome.
+> parser. Feedback welcome — especially from people doing client-side BI.
 
 ## HN Show submission
 
-**Title:** Show HN: wgsql — 10M-row dashboards in the browser, on the GPU
+**Title:** Show HN: wgsql – JavaScript vs GPU, same slider, watch the lag pile up
 
 **URL:** https://github.com/shiahonb777/wgsql
 
@@ -64,10 +64,13 @@ day-of, then post.
 > browser. It exists because most "browser dashboards" stop being
 > interactive somewhere around 1M rows.
 >
-> The default demo loads 10M synthetic sales rows and gives you a
-> filter slider. Dragging the slider re-runs `SELECT product,
-> SUM(amount), COUNT(*) WHERE amount >= ? GROUP BY product` on the GPU
-> from scratch every frame. ~80–120 ms typical on M-series Chrome.
+> The demo is a side-by-side race. Left panel: JavaScript Map running
+> in a Web Worker (the most favourable JS setup — dedicated thread,
+> never blocks the UI). Right panel: wgsql on WebGPU. Same data, same
+> query, same slider. Drag the slider; the left side falls behind, the
+> right side stays interactive. Four scenarios (taxi tips, equity
+> trades, game telemetry, ad clicks) all driven by the same kernel —
+> only the data and labels change.
 >
 > The kernel is ~300 lines: open-address linear-probe hash table on
 > top of atomic<i32> storage buffers. WHERE is fused into the same
@@ -76,7 +79,7 @@ day-of, then post.
 > speedup (1.13× → 8.1× in the browser) once we stopped over-allocating.
 >
 > What it's good for:
-> - Frontend dashboards that need to stay 60 fps past 1M rows
+> - Frontend dashboards that need to stay interactive past 1M rows
 > - Private analytics where the data can't leave the user's tab
 > - Embeddable BI in SaaS without a per-customer backend
 >
@@ -85,67 +88,75 @@ day-of, then post.
 > At low cardinality (1K groups), JS Map fits in L2 cache and beats
 > us; the README says so.
 >
-> v0.1, MIT. Roadmap: i64/f32/string keys, multi-column GROUP BY,
-> OUTER JOIN, Parquet zero-copy, full SQL parser. Feedback welcome,
-> especially from people doing client-side BI.
+> v0.1, MIT, ~388 KB wasm. Roadmap: i64/f32/string keys, multi-column
+> GROUP BY, OUTER JOIN, Parquet zero-copy, full SQL parser. Feedback
+> welcome.
 
 ## Reddit /r/rust crosspost
 
-**Title:** wgsql: GPU-accelerated SQL GROUP BY in the browser, via WebGPU
+**Title:** wgsql: Same slider, JS in a worker on the left vs WebGPU on the right. Watch the lag.
 
 (Same body as HN.)
 
 ## Reddit /r/dataengineering submission
 
-**Title:** Built a WebGPU OLAP kernel — 10M-row dashboards stay smooth in
-the browser without a backend
+**Title:** Built a WebGPU OLAP kernel — JS-in-a-worker vs GPU side by side, in the browser
 
 **Text:** (Same body as HN.)
 
 ## Demo video script (90s)
 
-**0:00–0:08** Open https://shiahonb777.github.io/wgsql/. Show "wgsql
-ready on BrowserWebGpu / Apple M4 Pro". Dashboard fills in.
+**0:00–0:10** Open https://shiahonb777.github.io/wgsql/. Show "wgsql
+ready on BrowserWebGpu / Apple M4 Pro". The split panels render with
+🚖 NYC taxi tips selected.
 
-**0:08–0:30** The KPI cards show 10M rows / total revenue / avg order /
-GPU latency. Below: top-20 product bar chart. Drag the "min amount"
-slider from 0 → 800. The chart re-orders smoothly, KPIs update each
-frame, "GPU compute" stays around 80–120 ms.
-> Voiceover: "10 million rows. The slider isn't pre-computing index
-> rebuilds — every drag re-runs the entire GROUP BY on the GPU."
+**0:10–0:35** Drag the slider quickly back and forth. The left panel's
+"slider moved" counter ticks up to ~50 while "left frames done" lags
+to ~3; the latency pill shows "stale · still computing". The right
+panel keeps up, "live", new top-20 bars on every drag.
+> Voiceover: "Same query. Same data. Same slider. JS in a Web Worker
+> on the left, GPU on the right. The lag isn't the main thread — that
+> argument's gone."
 
-**0:30–0:50** Switch the region dropdown. Bars rebuild. Then scroll
-down to the benchmark panel, click "Run benchmark". Numbers land:
-JS Map 900ms vs wgsql 111ms. 8.1×.
+**0:35–0:50** Click 🎮 Game telemetry tab (100K players). Drag again.
+The gap stays.
+> Voiceover: "Different data, same kernel. The thing that changes is
+> the cardinality."
 
-**0:50–1:10** Scroll to the Parquet drop zone. Drag in a 10M-row
-sample file. "10.0M rows parsed. JS Map 870ms / wgsql GPU 110ms /
-7.9× speedup."
-> Voiceover: "And nothing left the tab."
+**0:50–1:10** Click 🛒 Ad clicks (1M users). Drag.
+> Voiceover: "1M distinct keys. The Map's hash table doesn't fit in
+> L2 anymore. This is where the GPU stops being a flex and starts
+> being the only option."
 
-**1:10–1:30** End slide:
+**1:10–1:25** Scroll down to the benchmark panel, click "Run benchmark".
+JS Map 900ms, DuckDB-WASM ~3–5s, wgsql 111ms.
+
+**1:25–1:30** End slide:
   - github.com/shiahonb777/wgsql
   - shiahonb777.github.io/wgsql
   - MIT, v0.1, ~388 KB wasm
 
 ## Pre-launch checklist
 
-- [ ] Refresh demo, confirm dashboard latency stays ≤ 150 ms typical
-      with the slider at any position
-- [ ] Double-check KPI calculations match the JS baseline at slider=0
+- [ ] Refresh demo, confirm side-by-side race shows clear lag in all
+      four scenarios when slider is dragged quickly
+- [ ] Verify left panel correctly shows "stale" when behind the user
+- [ ] Verify the speedup banner stays in the 5–15× range across
+      scenarios (low-cardinality 🚖 may dip to 1.5–3×; that's expected)
 - [ ] README datasheet matches today's numbers (re-run if stale)
 - [ ] First issue ("Help wanted: i64 keys") opened to seed contributor
       activity
-- [ ] OG image generated showing the dashboard with bars + KPIs
-- [ ] Have a 10M-row sample Parquet ready to drop in if anyone asks
+- [ ] OG image: a screen-capture of the split panels mid-drag with
+      visible lag on the left
 
 ## Communities to seed
 
 In rough order of fit:
-- HN Show (the dashboard demo is the hook)
+- HN Show (the side-by-side race is the visual hook)
 - /r/dataengineering (DuckDB-WASM comparison gives credibility)
+- /r/webdev (frontend folks who fight 10M-row tables; the "Web Worker"
+  framing is targeted at them specifically)
 - /r/rust (Rust + WebGPU)
-- /r/webdev (frontend folks who fight 10M-row tables)
 - WebGPU Discord (gpuweb)
 - Polars / Arrow community channels
 - Twitter: @gfx_rs, @wgpu_rs, @WebGPU mentions
@@ -160,5 +171,5 @@ In rough order of fit:
 - Don't promise WASM size below current ~388 KB
 - Don't promise i64 keys, OUTER JOIN, or string keys for v0.1 — they're
   not in
-- The honest pitch: "GPU OLAP primitive that you can drop into a
-  browser app and ship dashboards that stay smooth past 10M rows"
+- The honest pitch: "GPU OLAP primitive, in the browser, no server,
+  faster than JS even when JS is in a worker"

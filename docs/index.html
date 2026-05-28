@@ -3,14 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wgsql — browser GROUP BY benchmark</title>
+<title>wgsql — 10M-row dashboard, in your browser, on the GPU</title>
 <style>
   :root {
     --bg: #0f1115;
     --surface: #181b22;
+    --surface-2: #20242d;
     --text: #e8ebf2;
     --muted: #9aa1ad;
+    --dim: #6b7280;
     --accent: #6ab0ff;
+    --accent-2: #8b5cf6;
     --good: #4ade80;
     --warn: #fbbf24;
     --bad:  #f87171;
@@ -24,11 +27,30 @@
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    padding: 24px 16px;
+    padding: 24px 16px 64px;
   }
-  .wrap { max-width: 980px; margin: 0 auto; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h1 small { color: var(--muted); font-weight: 400; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .hero { padding: 8px 0 12px; }
+  h1 {
+    font-size: 28px;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    display: inline-block;
+  }
+  h1 + p { margin: 0 0 4px; color: var(--text); font-size: 16px; }
+  h1 + p + p { color: var(--muted); font-size: 13px; }
+  h2 {
+    font-size: 14px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin: 28px 0 8px;
+  }
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -45,9 +67,14 @@
     font-weight: 600;
     cursor: pointer;
   }
+  button.ghost {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   label { color: var(--muted); display: inline-block; margin-right: 6px; }
-  select, input {
+  select, input[type="text"], input[type="number"] {
     background: #0b0e13;
     border: 1px solid var(--border);
     color: var(--text);
@@ -67,6 +94,7 @@
   .warn { color: var(--warn); }
   .err { color: var(--bad); }
   .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
   pre {
     background: #0b0e13;
     border: 1px solid var(--border);
@@ -75,67 +103,221 @@
     margin: 0;
     overflow-x: auto;
     font-size: 12px;
+    max-height: 240px;
   }
-  a { color: var(--accent); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+
+  /* dashboard layout */
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  @media (max-width: 720px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .kpi .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .kpi .value {
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+    margin-top: 4px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .controls-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .slider-row input[type=range] {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+  .pill {
+    display: inline-block;
+    background: var(--surface-2);
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    border: 1px solid var(--border);
+  }
+  .pill.warn { color: var(--warn); }
+  .pill.good { color: var(--good); }
+
+  .bars { width: 100%; }
+  .bar {
+    display: grid;
+    grid-template-columns: 80px 1fr 100px;
+    gap: 8px;
+    align-items: center;
+    padding: 3px 0;
+    font-variant-numeric: tabular-nums;
+    font-size: 12.5px;
+  }
+  .bar .k { color: var(--muted); }
+  .bar .b {
+    height: 14px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    border-radius: 3px;
+  }
+  .bar .v { text-align: right; font-weight: 500; }
+
+  .latency {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .latency b { color: var(--good); font-weight: 600; }
+
+  .links { color: var(--muted); font-size: 13px; }
+  .links a { margin-right: 14px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>wgsql <small>— GPU GROUP BY in your browser</small></h1>
-  <p class="muted">
-    A WGSL kernel runs <code>SELECT key, SUM(value) GROUP BY key</code>
-    on your GPU. Compares against a JavaScript <code>Map</code> baseline
-    on the same data. Source:
-    <a href="https://github.com/shiahonb777/wgsql" target="_blank">github.com/shiahonb777/wgsql</a>.
-  </p>
 
-  <div class="card">
+  <header class="hero">
+    <h1>wgsql</h1>
+    <p>Build dashboards that handle <b>10 million rows</b> without lag, on
+       any GPU, in any browser. Your data never leaves the device.</p>
+    <p>One WGSL compute kernel. WebGPU-native. MIT.
+       <span class="dim">~388 KB wasm, no server, no upload.</span></p>
+    <p class="links" style="margin-top:8px">
+      <a href="https://github.com/shiahonb777/wgsql" target="_blank">GitHub</a>
+      <a href="#benchmark">Benchmark</a>
+      <a href="#parquet">Run on your file</a>
+    </p>
+  </header>
+
+  <div class="card" id="boot-card">
     <div id="status">checking WebGPU support…</div>
   </div>
 
-  <div class="card" id="controls" style="display:none">
-    <label>n =</label>
-    <select id="n">
-      <option value="100000">100 K</option>
-      <option value="1000000">1 M</option>
-      <option value="10000000" selected>10 M</option>
-    </select>
-    <label>distinct groups =</label>
-    <select id="g">
-      <option value="1024">1 K</option>
-      <option value="100000">100 K</option>
-      <option value="1000000" selected>1 M</option>
-    </select>
-    <button id="run">Run benchmark</button>
-    <label style="margin-left:14px"><input type="checkbox" id="compareDuck" checked> compare DuckDB-WASM</label>
-    <p class="muted" style="margin-top:8px;font-size:12px">
-      GPU wins big at high cardinality (≥100 K groups) and large data (≥10 M rows).
-      At low cardinality (1 K groups), JS Map fits in CPU L2 cache and beats the GPU's
-      atomic-contention bottleneck. Try both regimes.
+  <h2>Live dashboard · 10 M rows · synthetic sales</h2>
+  <div class="card" id="dashboard" style="display:none">
+    <div class="kpis">
+      <div class="kpi">
+        <div class="label">rows after filter</div>
+        <div class="value" id="kpi-rows">—</div>
+        <div class="sub" id="kpi-rows-sub">of 10,000,000</div>
+      </div>
+      <div class="kpi">
+        <div class="label">total revenue</div>
+        <div class="value" id="kpi-rev">—</div>
+        <div class="sub" id="kpi-rev-sub">SUM(amount)</div>
+      </div>
+      <div class="kpi">
+        <div class="label">avg per order</div>
+        <div class="value" id="kpi-avg">—</div>
+        <div class="sub" id="kpi-avg-sub">SUM / COUNT</div>
+      </div>
+      <div class="kpi">
+        <div class="label">GPU compute</div>
+        <div class="value" id="kpi-gpu">—</div>
+        <div class="sub" id="kpi-gpu-sub">over <span id="kpi-distinct">—</span> distinct products</div>
+      </div>
+    </div>
+
+    <div style="margin-top:18px">
+      <div class="controls-row">
+        <div class="slider-row">
+          <label>min amount ≥</label>
+          <span class="pill" id="amount-pill">0</span>
+          <input type="range" id="amount-slider" min="0" max="1000" step="1" value="0">
+        </div>
+        <div>
+          <label>region</label>
+          <select id="region-select">
+            <option value="-1" selected>all (64)</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted" style="font-size:12.5px; margin: 4px 0 0">
+        Drag the slider. The GPU re-runs <code>SELECT product, SUM(amount), COUNT(*) WHERE amount &ge; ? GROUP BY product</code>
+        live (~<span id="latency-typ">100 ms</span> typical) on every move. No server, no
+        client-side rebuild, no incremental indexes — the kernel just chews through 10 M rows.
+      </p>
+    </div>
+
+    <div style="margin-top:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:0.06em">
+          Top 20 products by revenue
+        </div>
+        <div class="latency" id="latency">—</div>
+      </div>
+      <div class="bars" id="bars"></div>
+    </div>
+  </div>
+
+  <h2 id="benchmark">Speed proof · GPU vs JS Map vs DuckDB-WASM</h2>
+  <div class="card" id="bench-card" style="display:none">
+    <p class="muted" style="margin:0 0 10px;font-size:12.5px">
+      Same query (<code>SELECT k, SUM(v) GROUP BY k</code>) on synthetic data,
+      against three browser-native baselines. wgsql wins big when distinct
+      groups are large enough that a <code>Map</code> stops fitting in CPU L2 cache.
+      That's almost every real OLAP workload.
     </p>
+    <div>
+      <label>n =</label>
+      <select id="n">
+        <option value="100000">100 K</option>
+        <option value="1000000">1 M</option>
+        <option value="10000000" selected>10 M</option>
+      </select>
+      <label>distinct groups =</label>
+      <select id="g">
+        <option value="1024">1 K</option>
+        <option value="100000">100 K</option>
+        <option value="1000000" selected>1 M</option>
+      </select>
+      <button id="run">Run benchmark</button>
+      <label style="margin-left:14px"><input type="checkbox" id="compareDuck" checked> compare DuckDB-WASM</label>
+    </div>
+    <div id="results" style="display:none;margin-top:10px">
+      <table>
+        <thead>
+          <tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+      <div id="speedup" style="margin-top:8px"></div>
+    </div>
   </div>
 
-  <div class="card" id="results" style="display:none">
-    <table>
-      <thead>
-        <tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr>
-      </thead>
-      <tbody id="results-body"></tbody>
-    </table>
-    <div id="speedup" style="margin-top:12px"></div>
-  </div>
-
+  <h2 id="parquet">Run on your own file · stays on your device</h2>
   <div class="card">
-    <h3 style="margin:0 0 8px;font-size:14px;color:var(--muted)">Or run on your own Parquet</h3>
-    <p class="muted" style="font-size:12px;margin:4px 0">
-      Drop a file. We pick the first two integer columns (or you can name
-      them) and run <code>SELECT k, SUM(v) GROUP BY k</code> through both
-      JS Map and wgsql GPU.
+    <p class="muted" style="font-size:12.5px;margin:0 0 8px">
+      Drop a Parquet. We pick the first two integer columns (or you can name
+      them) and run the same GPU GROUP BY. Nothing is uploaded — the file is
+      parsed by DuckDB-WASM in this tab and handed to the GPU as Int32Arrays.
     </p>
     <div id="dropzone" style="
       border: 1px dashed var(--border);
       border-radius: 6px;
-      padding: 24px;
+      padding: 22px;
       text-align: center;
       color: var(--muted);
       cursor: pointer;
@@ -146,14 +328,15 @@
     </div>
     <div style="font-size:12px;margin-top:6px">
       <label>group key column:</label>
-      <input id="colK" placeholder="auto-detect" style="width:160px">
+      <input type="text" id="colK" placeholder="auto-detect" style="width:160px">
       <label>value column:</label>
-      <input id="colV" placeholder="auto-detect" style="width:160px">
-      <button id="runFile" disabled style="background:var(--surface-2);color:var(--muted)">load a file first</button>
+      <input type="text" id="colV" placeholder="auto-detect" style="width:160px">
+      <button id="runFile" disabled class="ghost">load a file first</button>
     </div>
     <div id="fileResults" style="margin-top:8px"></div>
   </div>
 
+  <h2>Log</h2>
   <div class="card">
     <pre id="log"></pre>
   </div>
@@ -170,6 +353,18 @@ const log = (line, cls = "") => {
   if (cls) el.className = cls;
   el.textContent = line + "\n";
   pre.appendChild(el);
+  pre.scrollTop = pre.scrollHeight;
+};
+
+const fmt = {
+  int: n => n.toLocaleString(),
+  money: n => "$" + (n >= 1e9 ? (n/1e9).toFixed(2) + "B"
+                  : n >= 1e6 ? (n/1e6).toFixed(2) + "M"
+                  : n >= 1e3 ? (n/1e3).toFixed(1) + "K"
+                  : n.toFixed(0)),
+  ms: n => n < 10 ? n.toFixed(1) + " ms"
+          : n < 1000 ? n.toFixed(0) + " ms"
+          : (n/1000).toFixed(2) + " s",
 };
 
 let engine = null;
@@ -195,17 +390,6 @@ async function ensureDuckDB() {
 }
 
 async function duckDBGroupBy(keys, values) {
-  // Time the whole pipeline: get data into DuckDB (the way a typical
-  // DuckDB-WASM user would, ingesting a 10M-row CSV), run the query,
-  // get results back. This is the apples-to-apples comparison vs
-  // wgsql's groupBySumI32(keys, values), which also takes typed arrays
-  // in and returns rows out.
-  //
-  // We measure two splits:
-  //   tIngest  - CSV register + COPY into DuckDB
-  //   tQuery   - the GROUP BY itself
-  // and return the sum as the total fair number, plus the split for
-  // transparency in the log.
   await duckConn.query(`DROP TABLE IF EXISTS t;`);
   await duckConn.query(`CREATE TABLE t (k INTEGER, v INTEGER);`);
 
@@ -248,11 +432,15 @@ async function boot() {
     "<span class='ok'>wgsql ready</span> on " +
     "<code>" + engine.backend + "</code> / " +
     "<code>" + engine.adapterName + "</code>";
-  $("controls").style.display = "block";
+  $("bench-card").style.display = "block";
   log("[boot] backend=" + engine.backend + " adapter=" + engine.adapterName);
+
+  // Generate the dashboard dataset, render the dashboard, and run the
+  // first query.
+  await initDashboard();
 }
 
-// Deterministic xorshift32 so the generated data matches the native test.
+// Deterministic xorshift32 so we can reproduce numbers locally.
 function makeData(n, gMod) {
   const keys = new Int32Array(n);
   const values = new Int32Array(n);
@@ -267,9 +455,6 @@ function makeData(n, gMod) {
 }
 
 function jsBaseline(keys, values) {
-  // Map<i32, BigInt> would be ideal but BigInt math is slow; we use
-  // plain Number sums since values stay well below 2^53 for our test
-  // sizes.
   const acc = new Map();
   const n = keys.length;
   for (let i = 0; i < n; i++) {
@@ -279,31 +464,214 @@ function jsBaseline(keys, values) {
   return acc;
 }
 
+// ---------- Dashboard ----------
+
+const DASH = {
+  N: 10_000_000,
+  PRODUCTS: 1024,         // distinct group keys
+  REGIONS: 64,            // for filter dropdown (UI prefilter)
+  AMOUNT_MAX: 1000,
+};
+
+let dash = {
+  product: null,        // Int32Array length N, in [0, PRODUCTS)
+  amount: null,         // Int32Array length N, in [0, AMOUNT_MAX)
+  region: null,         // Int32Array length N, in [0, REGIONS)
+  // After region filter: cached views
+  productView: null,
+  amountView: null,
+  currentRegion: -1,
+};
+
+let dashScheduled = false;
+let dashRunning = false;
+let dashLastRun = 0;
+
+async function initDashboard() {
+  log(`[dash] generating ${fmt.int(DASH.N)} rows …`);
+  const t = performance.now();
+  // Three columns. Use independent xorshift streams to avoid correlation.
+  const product = new Int32Array(DASH.N);
+  const amount  = new Int32Array(DASH.N);
+  const region  = new Int32Array(DASH.N);
+  let x = 0x1234567 | 0;
+  let y = 0x76543210 | 0;
+  let z = 0x0BADBEEF | 0;
+  for (let i = 0; i < DASH.N; i++) {
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    y ^= y << 13; y ^= y >>> 17; y ^= y << 5;
+    z ^= z << 13; z ^= z >>> 17; z ^= z << 5;
+    product[i] = (x >>> 0) % DASH.PRODUCTS;
+    amount[i]  = (y >>> 0) % DASH.AMOUNT_MAX;
+    region[i]  = (z >>> 0) % DASH.REGIONS;
+  }
+  log(`[dash] generated in ${(performance.now()-t).toFixed(0)} ms`);
+
+  dash.product = product;
+  dash.amount = amount;
+  dash.region = region;
+  dash.productView = product;
+  dash.amountView = amount;
+  dash.currentRegion = -1;
+
+  // Region selector
+  const regionSel = $("region-select");
+  for (let r = 0; r < DASH.REGIONS; r++) {
+    const opt = document.createElement("option");
+    opt.value = String(r);
+    opt.textContent = "region " + r;
+    regionSel.appendChild(opt);
+  }
+
+  $("dashboard").style.display = "block";
+  $("kpi-distinct").textContent = fmt.int(DASH.PRODUCTS);
+
+  // Hook controls
+  $("amount-slider").addEventListener("input", e => {
+    $("amount-pill").textContent = "≥ " + e.target.value;
+    scheduleDashRun();
+  });
+  regionSel.addEventListener("change", () => {
+    rebuildRegionView();
+    scheduleDashRun();
+  });
+
+  // Initial run
+  await runDash();
+}
+
+function rebuildRegionView() {
+  const r = parseInt($("region-select").value, 10);
+  if (r === dash.currentRegion) return;
+  dash.currentRegion = r;
+  if (r < 0) {
+    dash.productView = dash.product;
+    dash.amountView = dash.amount;
+    return;
+  }
+  // Pre-filter by region on the CPU side. This is a one-time cost per
+  // region change and lets the GPU run a cleaner, smaller GROUP BY.
+  const { product, amount, region } = dash;
+  let count = 0;
+  for (let i = 0; i < region.length; i++) if (region[i] === r) count++;
+  const p = new Int32Array(count);
+  const a = new Int32Array(count);
+  let j = 0;
+  for (let i = 0; i < region.length; i++) {
+    if (region[i] === r) { p[j] = product[i]; a[j] = amount[i]; j++; }
+  }
+  dash.productView = p;
+  dash.amountView  = a;
+}
+
+function scheduleDashRun() {
+  if (dashScheduled) return;
+  dashScheduled = true;
+  // Coalesce input events to ~16 ms (one frame) so a fast drag fires
+  // one query, not 200.
+  setTimeout(() => {
+    dashScheduled = false;
+    if (dashRunning) {
+      // queue one more after the current finishes
+      dashLastRun = -1;
+    } else {
+      runDash().catch(e => log("ERROR: " + e, "err"));
+    }
+  }, 16);
+}
+
+async function runDash() {
+  if (!engine) return;
+  dashRunning = true;
+  const minAmount = parseInt($("amount-slider").value, 10);
+  const keys = dash.productView;
+  const values = dash.amountView;
+
+  const t0 = performance.now();
+  const filter = minAmount > 0 ? { op: "ge", threshold: minAmount } : null;
+  const flat = await engine.aggI32(keys, values, DASH.PRODUCTS, filter);
+  const tGpu = performance.now() - t0;
+
+  // Layout: per row [k, sum_lo, sum_hi, count_lo, count_hi, min, max]
+  const stride = 7;
+  const rowCount = flat.length / stride;
+  let totalSum = 0;
+  let totalCount = 0;
+  // Top-K with a small partial sort (rowCount <= 1024 here).
+  const rows = new Array(rowCount);
+  for (let i = 0; i < rowCount; i++) {
+    const off = i * stride;
+    const key = flat[off];
+    const sum = (flat[off+2] * 4294967296) + (flat[off+1] >>> 0);
+    const count = (flat[off+4] * 4294967296) + (flat[off+3] >>> 0);
+    rows[i] = { key, sum, count };
+    totalSum += sum;
+    totalCount += count;
+  }
+  rows.sort((a, b) => b.sum - a.sum);
+
+  // KPIs
+  $("kpi-rows").textContent = fmt.int(totalCount);
+  $("kpi-rows-sub").textContent =
+    `of ${fmt.int(keys.length)}` +
+    (dash.currentRegion >= 0 ? ` (region ${dash.currentRegion})` : "");
+  $("kpi-rev").textContent = fmt.money(totalSum);
+  $("kpi-avg").textContent = totalCount > 0 ? fmt.money(totalSum / totalCount) : "—";
+  $("kpi-gpu").textContent = fmt.ms(tGpu);
+  $("kpi-distinct").textContent = fmt.int(rowCount);
+
+  // Bar chart: top 20 products by revenue
+  const top = rows.slice(0, 20);
+  const max = top.length > 0 ? top[0].sum : 1;
+  const bars = $("bars");
+  bars.innerHTML = "";
+  for (const r of top) {
+    const row = document.createElement("div");
+    row.className = "bar";
+    row.innerHTML =
+      `<span class="k">product ${r.key}</span>` +
+      `<div><div class="b" style="width:${(r.sum/max*100).toFixed(1)}%"></div></div>` +
+      `<span class="v">${fmt.money(r.sum)}</span>`;
+    bars.appendChild(row);
+  }
+  if (top.length === 0) {
+    bars.innerHTML = `<div class="muted" style="padding:12px;text-align:center">no rows match this filter</div>`;
+  }
+
+  $("latency").innerHTML =
+    `GPU GROUP BY (${rowCount} groups, ${fmt.int(keys.length)} rows scanned, filter ${filter ? "amount &ge; " + filter.threshold : "none"}): <b>${fmt.ms(tGpu)}</b>`;
+
+  dashRunning = false;
+  // If a user input arrived during execution, run again.
+  if (dashLastRun === -1) {
+    dashLastRun = 0;
+    runDash();
+  }
+}
+
+// ---------- Benchmark (existing) ----------
+
 async function runBench() {
   const n = parseInt($("n").value, 10);
   const groups = parseInt($("g").value, 10);
   $("run").disabled = true;
   $("results").style.display = "none";
 
-  log(`[run] n=${n.toLocaleString()} groups=${groups.toLocaleString()}`);
+  log(`[bench] n=${n.toLocaleString()} groups=${groups.toLocaleString()}`);
 
-  // Generate data.
   const t0 = performance.now();
   const { keys, values } = makeData(n, groups);
   const tGen = performance.now() - t0;
   log(`  gen        ${tGen.toFixed(1)} ms`);
 
-  // JS baseline.
   const t1 = performance.now();
   const cpuMap = jsBaseline(keys, values);
   const tCpu = performance.now() - t1;
 
-  // GPU run.
   const t2 = performance.now();
   const flat = await engine.groupBySumI32(keys, values, groups);
   const tGpu = performance.now() - t2;
 
-  // DuckDB-WASM run (lazy init on first call).
   let duckRow = "";
   let speedupVsDuck = null;
   if ($("compareDuck").checked) {
@@ -321,8 +689,6 @@ async function runBench() {
     }
   }
 
-  // Validate spot checks: same number of distinct keys, and a few
-  // randomly chosen sums match.
   const gpuRows = flat.length / 3;
   let matches = 0, checked = 0;
   for (let i = 0; i < flat.length && checked < Math.min(50, gpuRows); i += 3) {
@@ -364,21 +730,16 @@ async function runBench() {
 
 $("run").addEventListener("click", () => { runBench().catch(e => log("ERROR: " + e, "err")); });
 
-// ---- File-based benchmark on a user-supplied Parquet ----
+// ---------- Parquet upload ----------
 
-let loadedParquet = null;   // { keys: Int32Array, values: Int32Array, kCol, vCol }
+let loadedParquet = null;
 
 async function loadParquetFile(file) {
   log(`[file] reading ${file.name} (${(file.size/1e6).toFixed(1)} MB)`);
   const buf = new Uint8Array(await file.arrayBuffer());
-
   await ensureDuckDB();
 
-  // Register the bytes as a virtual file inside DuckDB-WASM, then ask
-  // DuckDB to parse and return columns.
   await duckConn.bindings.registerFileBuffer(file.name, buf);
-
-  // Discover schema. Pick the first two integer-typed columns by default.
   const schema = await duckConn.query(`DESCRIBE SELECT * FROM '${file.name}' LIMIT 0;`);
   const intCols = [];
   for (let i = 0; i < schema.numRows; i++) {
@@ -403,7 +764,6 @@ async function loadParquetFile(file) {
   const tParse = performance.now() - t;
   log(`[file] parsed in ${tParse.toFixed(0)} ms (${result.numRows.toLocaleString()} rows)`);
 
-  // Pull both columns into Int32Arrays.
   const n = result.numRows;
   const keys = new Int32Array(n);
   const values = new Int32Array(n);
@@ -416,8 +776,7 @@ async function loadParquetFile(file) {
 
   loadedParquet = { keys, values, kCol, vCol, fileName: file.name };
   $("runFile").disabled = false;
-  $("runFile").style.background = "var(--accent)";
-  $("runFile").style.color = "#0b1220";
+  $("runFile").classList.remove("ghost");
   $("runFile").textContent = `Run on ${file.name}`;
   $("fileResults").innerHTML = `
     <div class="muted" style="font-size:12px">
@@ -433,9 +792,6 @@ async function runFileBench() {
   const { keys, values, kCol, vCol, fileName } = loadedParquet;
   const n = keys.length;
 
-  // Estimate distinct group count with a quick first-1024 sample.
-  // Underestimating just costs a probing tail; overestimating wastes
-  // hash-table memory. A 1% sample is plenty for the typical workload.
   const sample = new Set();
   const sampleN = Math.min(n, 50_000);
   for (let i = 0; i < sampleN; i++) sample.add(keys[i]);

@@ -6,6 +6,16 @@ export class Engine {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Run SELECT key, SUM(v), COUNT(*), MIN(v), MAX(v) GROUP BY key
+     * optionally fused with WHERE (see top-of-file docs).
+     *
+     * Returns a flat Int32Array of 7 i32 fields per row:
+     *   [key, sum_lo, sum_hi, count_lo, count_hi, min, max]
+     * JS callers can repack into objects; the layout is dense and
+     * avoids any object allocation in the hot path.
+     */
+    aggI32(keys: Int32Array, values: Int32Array, estimated_distinct: number | null | undefined, filter: any): Promise<any>;
+    /**
      * Run SELECT key, SUM(value) GROUP BY key.
      *
      * `keys` and `values` are i32 typed arrays of equal length.
@@ -39,6 +49,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_engine_free: (a: number, b: number) => void;
     readonly engine_adapterName: (a: number) => [number, number];
+    readonly engine_aggI32: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => any;
     readonly engine_backend: (a: number) => [number, number];
     readonly engine_groupBySumI32: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly init: () => any;

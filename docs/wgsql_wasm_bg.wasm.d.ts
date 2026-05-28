@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_engine_free: (a: number, b: number) => void;
 export const engine_adapterName: (a: number) => [number, number];
+export const engine_aggI32: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => any;
 export const engine_backend: (a: number) => [number, number];
 export const engine_groupBySumI32: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
 export const init: () => any;

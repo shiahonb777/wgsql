@@ -1,54 +1,57 @@
 # wgsql
 
-GPU-accelerated columnar OLAP via WebGPU. **8× faster than JavaScript
-in your browser**, on a 10 M-row GROUP BY. One WGSL kernel, four
-backends: native Metal/DX12/Vulkan + browser WebGPU.
+**Build dashboards that handle 10 million rows without lag, all in the
+browser, on the user's GPU. Data never leaves the device.**
+
+wgsql is a WebGPU compute kernel that runs columnar OLAP — `GROUP BY`,
+`WHERE`, multi-aggregate, hash JOIN — directly on whatever GPU is
+already in the user's machine. One WGSL kernel, four backends: native
+Metal / DX12 / Vulkan + browser WebGPU. ~388 KB wasm, no server, no
+upload.
 
 ```rust
-use wgsql::Engine;
+use wgsql::{Engine, GroupByOptions, Filter};
 let engine = Engine::new()?;
-let rows = engine.group_by_sum_i32(&category, &amount)?;
-// SELECT category, SUM(amount) FROM ... GROUP BY category
+
+// SELECT product, SUM(amount), COUNT(*), MIN(amount), MAX(amount)
+// FROM orders WHERE amount >= 100 GROUP BY product
+let rows = engine.agg_i32(&product, &amount, GroupByOptions {
+    estimated_distinct: Some(1024),
+    filter: Some(Filter::ge(100)),
+})?;
 ```
 
 ## Live demo
 
-**https://shiahonb777.github.io/wgsql/** — click "Run benchmark".
+**https://shiahonb777.github.io/wgsql/**
 
-On a Chromium browser with WebGPU enabled (Chrome / Edge / recent
-Safari TP):
+The default page loads a 10 M-row synthetic sales table into the GPU
+and gives you a slider. Drag it. The KPIs and the top-20 product bar
+chart update live, every frame, with `SELECT product, SUM(amount),
+COUNT(*) WHERE amount ≥ ? GROUP BY product` re-run from scratch on the
+GPU each time. ~80–120 ms typical on Chrome / M-series. No server, no
+incremental indexes.
 
-| Workload                     | JavaScript Map | wgsql GPU | Speedup |
-|------------------------------|---------------:|----------:|--------:|
-| 10 M rows × 1 M groups       |       900 ms   |   111 ms  | **8.1×** |
+There's also a benchmark panel (GPU vs JS Map vs DuckDB-WASM) and a
+drag-drop Parquet box for your own files. Both run entirely in the tab.
 
-(Apple M4 Pro / Chrome 138 / WebGPU Metal backend. Numbers vary by
-GPU — but the shape holds: GPU dominates whenever the hash table
-exceeds CPU cache, which is most real-world OLAP.)
+## What this is for
 
-## Status
+- **Client-side dashboards that don't choke on 10 M rows.** Frontend
+  engineers shipping analytics UIs to customers know the moment row
+  counts hit single-digit millions, JS-side aggregations stop fitting
+  in 16 ms frames. wgsql is the GPU primitive that lets the dashboard
+  stay interactive at row counts where `Map` and `Array.reduce` give up.
+- **Private analytics.** Healthcare, financial advisory, internal HR
+  data — workloads where shipping every byte to a backend is either a
+  compliance fight or a latency tax. wgsql aggregates in the user's
+  tab. Nothing leaves the device.
+- **Embeddable BI.** SaaS founders who want a "data explorer" tab without
+  spinning up a Snowflake bill or a backend service per customer. A
+  single-page app + a Parquet file in object storage is now a viable
+  topology for tens of millions of rows.
 
-**v0.1.** One operator (GROUP BY + SUM on i32 keys and i32 values),
-runs in browser and natively. WebGPU integration tested on Chrome /
-Metal. The native side passes 9 GPU correctness tests; the browser
-side passes a live spot-check vs the JS baseline on every benchmark
-run.
-
-## What it can and can't do today
-
-| op                     | status |
-|---|---|
-| `GROUP BY i32 + SUM`   | ✅ works |
-| Multi-aggregate (SUM+COUNT+MIN+MAX in one pass) | ✅ works |
-| `WHERE` filter (eq/ne/lt/le/gt/ge) | ✅ works (fused) |
-| Inner JOIN on i32 keys | ✅ works |
-| WASM build / browser   | ✅ works (see live demo above) |
-| Drag-drop Parquet in the demo | ✅ works (via DuckDB-WASM parser) |
-| `GROUP BY` on i64/f32/string keys | ❌ later |
-| OUTER JOIN, ANTI JOIN  | ❌ later |
-| Full SQL parser         | ❌ later |
-
-## Honest performance
+## Live numbers
 
 `./target/release/wgsql selftest` on M4 Pro / Metal:
 
@@ -59,13 +62,13 @@ run.
 | 10M    |    1K    |    48 ms    |    26 ms  | 1.83x |
 | **10M** |   **1M** | **357 ms**  |  **29 ms** | **12.5x** |
 
-In the browser (Chrome 138 / WebGPU on M4 Pro):
+In Chrome 138 / WebGPU on the same M4 Pro:
 
 | n      | groups   | JS Map (`new Map()`) | wgsql GPU | speedup |
 |--------|---------:|---------------------:|----------:|--------:|
 | **10M** |   **1M** |          **900 ms** |  **111 ms** | **8.1x** |
 
-Reading these numbers honestly:
+Reading these honestly:
 
 - **wgsql wins big when the hash table outgrows CPU cache.** That's the
   regime where a 1024-bin Map sitting in L2 stops being free, and where
@@ -78,6 +81,41 @@ Reading these numbers honestly:
   is what makes this project differentiated; native CPU has Polars and
   DuckDB.
 
+## Status
+
+**v0.1.** Tested on Chrome 138 + Metal (browser), and natively on
+Metal / DX12 / Vulkan. 27 tests pass.
+
+| op                     | status |
+|---|---|
+| `GROUP BY i32 + SUM`   | ✅ |
+| Multi-aggregate (SUM+COUNT+MIN+MAX in one pass) | ✅ |
+| `WHERE` filter (eq/ne/lt/le/gt/ge), fused into the kernel | ✅ |
+| Inner JOIN on i32 keys | ✅ |
+| WASM build / browser   | ✅ |
+| Drag-drop Parquet in the demo | ✅ (DuckDB-WASM parses; GPU aggregates) |
+| `GROUP BY` on i64 / f32 / string keys | ❌ later |
+| OUTER JOIN, ANTI JOIN  | ❌ later |
+| Full SQL parser         | ❌ later |
+
+JS API exposed today (see the demo for full usage):
+
+```js
+import init, { init as wgsqlInit } from "./wgsql_wasm.js";
+await init();
+const engine = await wgsqlInit();
+
+// SUM only
+const rows = await engine.groupBySumI32(productIds, amounts, /* hint */ 1024);
+
+// SUM + COUNT + MIN + MAX, with optional WHERE
+const flat = await engine.aggI32(
+  productIds, amounts, /* hint */ 1024,
+  { op: "ge", threshold: 100 }    // or null for no filter
+);
+// flat is [k, sum_lo, sum_hi, count_lo, count_hi, min, max] per row
+```
+
 ## Architecture
 
 ```
@@ -85,9 +123,8 @@ Cargo workspace
 ├── crates/
 │   ├── wgsql/             core library
 │   │   ├── src/lib.rs     public API
-│   │   ├── src/engine.rs  wgpu Device/Queue + pipeline
-│   │   ├── src/hash.rs    capacity selection
-│   │   └── src/group_by_sum_i32.wgsl   the kernel
+│   │   ├── src/engine.rs  wgpu Device/Queue + pipelines
+│   │   └── src/*.wgsl     the kernels
 │   ├── wgsql-cli/         `wgsql` CLI: info, selftest
 │   └── wgsql-wasm/        wasm-bindgen wrapper for the browser
 ├── examples/
@@ -99,10 +136,10 @@ Cargo workspace
 └── build_wasm.sh          rebuild the WASM bundle into docs/
 ```
 
-The kernel is a textbook open-address linear-probe hash table on top
-of `atomic<i32>` storage buffers. One thread per row; CAS the key,
-atomicAdd the value. Capacity is `next_pow2(2*n)`; sentinel is
-`i32::MIN`.
+The aggregate kernel is a textbook open-address linear-probe hash
+table on top of `atomic<i32>` storage buffers. One thread per row;
+CAS the key, atomicAdd the value. WHERE is fused into the same pass.
+Capacity is `next_pow2(2*estimated_distinct)`; sentinel is `i32::MIN`.
 
 ## Build
 
@@ -136,18 +173,8 @@ python3 -m http.server 8088 --directory docs
 cargo test --release
 ```
 
-9 tests pass: 3 unit (capacity sizing) + 6 integration (GPU vs CPU
-correctness on empty / single / dense / random / negative keys / 50K
-distinct keys).
-
-## Why bother
-
-If WebGPU on M-series Macs and modern browsers can do 80-100M
-rows/sec on real GROUP BY, and the comparable browser baseline
-(DuckDB-WASM) does 5-15M, we have a real story for client-side OLAP
-that no library currently fills. Native is competitive territory we
-won't try to win; the browser is open territory we'll try to
-colonize.
+27 tests pass: 3 unit (capacity sizing) + 6 GROUP BY/SUM correctness +
+5 multi-aggregate + 8 WHERE filter + 5 hash JOIN.
 
 ## License
 

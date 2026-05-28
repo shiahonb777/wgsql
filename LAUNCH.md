@@ -1,175 +1,143 @@
 # Launch checklist
 
-Hold this private until ready. Update numbers from a fresh run on the
-day-of, then post.
+Hold this private until ready. Update every number from a fresh run on the
+day of, then post.
 
 ## Headline
 
-> **wgsql** runs SQL GROUP BY on the user's GPU through WebGPU.
-> JavaScript on the left, wgsql on the right, same slider — watch the
-> lag pile up. 10 M rows, in the browser, no server.
+The same SQL `GROUP BY` runs twice on every slider movement: once on a
+JavaScript `Map` in a Web Worker, once on the GPU. Same data, ten million
+rows, in a browser tab. Read the latency column on each side.
 
 ## Twitter thread
 
-**1/**
-> "Just put your dashboard in a Web Worker, JS is fast enough."
->
-> Same query. Same data. Same slider. JS Map (in a worker) on the left,
-> wgsql GPU on the right. 10M rows.
->
-> Drag the slider. Watch what happens.
->
-> Demo: https://shiahonb777.github.io/wgsql/
+**1.** Most "browser dashboards" stop being interactive somewhere around
+one or two million rows. Filter changes start dropping frames; users start
+feeling the lag.
 
-**2/**
-> Four scenarios — taxi tips, equity trades, game telemetry, ad clicks —
-> all driven by the same WGSL kernel. The only thing that changes is
-> the data and the labels. The GPU stays interactive past 1M distinct
-> groups; the JS Map can't.
+This demo runs the same `GROUP BY` twice on every slider move — once on a
+JavaScript `Map` in a Web Worker, once on the GPU. Ten million rows. Watch
+the latency on each side.
 
-**3/**
-> The whole engine is one WGSL compute kernel: open-address linear-probe
-> hash table, atomic CAS on the key, atomicAdd on the sum. WHERE is
-> fused into the same pass — slider drag = one kernel dispatch, not
-> three.
->
-> Same kernel runs on Metal, DX12, Vulkan, WebGPU. ~300 lines of code.
+shiahonb777.github.io/wgsql
 
-**4/**
-> Honest numbers (M4 Pro / Chrome 138 / 10M rows × 1M groups):
-> • JS Map: 900ms
-> • DuckDB-WASM: ~3–5s (CSV ingest + query)
-> • wgsql GPU: 111ms
->
-> 8.1× over JS Map. At low cardinality (1K groups), JS Map fits in L2
-> cache and beats us. The README says so.
+**2.** The Web Worker matters. It's the most generous baseline JavaScript
+has in a browser: dedicated thread, never blocks the UI, what most
+production analytics frontends are built on. The gap between the two
+columns isn't a main-thread argument.
 
-**5/**
-> Source: github.com/shiahonb777/wgsql
-> Demo:   shiahonb777.github.io/wgsql/
-> MIT, v0.1, ~388 KB wasm.
->
-> Roadmap: i64/f32/string keys, OUTER JOIN, Parquet zero-copy, full SQL
-> parser. Feedback welcome — especially from people doing client-side BI.
+**3.** Four scenarios share one WGSL kernel — taxi tips, equity trades, a
+game leaderboard, product sales. Distinct-key counts span 263 to 50,000.
+Below ~10⁵ keys, JavaScript is hard to beat. Above that, the hash table
+stops fitting in L2 cache and the GPU pulls away.
 
-## HN Show submission
+**4.** On M4 Pro / Chrome 138, the worst-case row of the comparison is
+1 M distinct keys × 10 M rows. JS `Map`: 900 ms. DuckDB-WASM (CSV ingest +
+query): about 3–5 seconds. wgsql GPU: 111 ms.
 
-**Title:** Show HN: wgsql – JavaScript vs GPU, same slider, watch the lag pile up
+**5.** Source: github.com/shiahonb777/wgsql. MIT, v0.1, ~388 KB wasm. WHERE
+filters are fused into the aggregation pass. Roadmap: i64 / f32 / string
+keys, multi-column GROUP BY, OUTER JOIN, Parquet zero-copy.
+
+## Show HN
+
+**Title:** Show HN: wgsql — JavaScript in a Web Worker vs WebGPU, same query
 
 **URL:** https://github.com/shiahonb777/wgsql
 
-**Text (no link in body, comment after):**
-> wgsql is a tiny columnar OLAP engine that compiles to a single WGSL
-> kernel and runs on Metal/DX12/Vulkan natively or on WebGPU in the
-> browser. It exists because most "browser dashboards" stop being
-> interactive somewhere around 1M rows.
->
-> The demo is a side-by-side race. Left panel: JavaScript Map running
-> in a Web Worker (the most favourable JS setup — dedicated thread,
-> never blocks the UI). Right panel: wgsql on WebGPU. Same data, same
-> query, same slider. Drag the slider; the left side falls behind, the
-> right side stays interactive. Four scenarios (taxi tips, equity
-> trades, game telemetry, ad clicks) all driven by the same kernel —
-> only the data and labels change.
->
-> The kernel is ~300 lines: open-address linear-probe hash table on
-> top of atomic<i32> storage buffers. WHERE is fused into the same
-> pass — no separate filter kernel, no scratch buffer. Capacity is
-> sized from a `estimated_distinct` hint, which was the single biggest
-> speedup (1.13× → 8.1× in the browser) once we stopped over-allocating.
->
-> What it's good for:
-> - Frontend dashboards that need to stay interactive past 1M rows
-> - Private analytics where the data can't leave the user's tab
-> - Embeddable BI in SaaS without a per-customer backend
->
-> Honest comparison (M4 Pro / Chrome 138 / 10M rows × 1M groups):
-> JS Map 900ms, DuckDB-WASM ~3–5s (ingest+query), wgsql GPU 111ms.
-> At low cardinality (1K groups), JS Map fits in L2 cache and beats
-> us; the README says so.
->
-> v0.1, MIT, ~388 KB wasm. Roadmap: i64/f32/string keys, multi-column
-> GROUP BY, OUTER JOIN, Parquet zero-copy, full SQL parser. Feedback
-> welcome.
+**Body (no link in body, comment after):**
 
-## Reddit /r/rust crosspost
+wgsql is a small SQL aggregation kernel for WebGPU. It runs `GROUP BY`,
+multi-aggregate, fused `WHERE`, and inner JOIN through a single WGSL
+compute kernel. Native (Metal, DX12, Vulkan) and browser, same code.
 
-**Title:** wgsql: Same slider, JS in a worker on the left vs WebGPU on the right. Watch the lag.
+The demo on the project page is a side-by-side comparison. The same query
+runs twice on every slider movement: once on a JavaScript `Map` in a Web
+Worker, once on the GPU. Same data path, same code, ten million rows. The
+Web Worker baseline is deliberate — it's the most generous JavaScript
+setup available in a browser, and it's what most production analytics
+frontends actually use. The point isn't "main thread is slow."
 
-(Same body as HN.)
+Four scenarios share the same kernel: taxi tips (263 zones), equity
+trades (5K tickers), a game leaderboard (50K players), and product sales
+(1K SKUs). The kernel doesn't change between them; only the data and the
+labels.
 
-## Reddit /r/dataengineering submission
+The kernel is short — open-address linear-probe hash table over
+`atomic<i32>` storage buffers, one thread per row, CAS the key, `atomicAdd`
+the value. `WHERE` is fused into the same pass. The single biggest win
+came from a capacity hint: shrinking the hash table from `2 × n` down to
+`2 × estimated_distinct` took the browser run from 1.13× to 8.1× over JS
+Map. The README documents this.
 
-**Title:** Built a WebGPU OLAP kernel — JS-in-a-worker vs GPU side by side, in the browser
+Honest numbers, M4 Pro / Chrome 138, 10 M rows × 1 M distinct keys: JS Map
+900 ms, DuckDB-WASM 3–5 s (CSV ingest + query), wgsql 111 ms. At low
+cardinality (1 K groups), the JS Map fits in L2 and beats us; the demo
+says so.
 
-**Text:** (Same body as HN.)
+Where this fits, in plain language: a client-side dashboard that needs to
+stay interactive past a few million rows; private analytics that
+shouldn't leave the device; embeddable BI in a SaaS without a per-customer
+backend.
 
-## Demo video script (90s)
+v0.1, MIT, ~388 KB wasm. Feedback welcome.
 
-**0:00–0:10** Open https://shiahonb777.github.io/wgsql/. Show "wgsql
-ready on BrowserWebGpu / Apple M4 Pro". The split panels render with
-🚖 NYC taxi tips selected.
+## /r/dataengineering
 
-**0:10–0:35** Drag the slider quickly back and forth. The left panel's
-"slider moved" counter ticks up to ~50 while "left frames done" lags
-to ~3; the latency pill shows "stale · still computing". The right
-panel keeps up, "live", new top-20 bars on every drag.
-> Voiceover: "Same query. Same data. Same slider. JS in a Web Worker
-> on the left, GPU on the right. The lag isn't the main thread — that
-> argument's gone."
+**Title:** WebGPU OLAP kernel: JS-in-a-worker vs GPU, same query, side by side
 
-**0:35–0:50** Click 🎮 Game telemetry tab (100K players). Drag again.
-The gap stays.
-> Voiceover: "Different data, same kernel. The thing that changes is
-> the cardinality."
+(Same body.)
 
-**0:50–1:10** Click 🛒 Ad clicks (1M users). Drag.
-> Voiceover: "1M distinct keys. The Map's hash table doesn't fit in
-> L2 anymore. This is where the GPU stops being a flex and starts
-> being the only option."
+## /r/rust
 
-**1:10–1:25** Scroll down to the benchmark panel, click "Run benchmark".
-JS Map 900ms, DuckDB-WASM ~3–5s, wgsql 111ms.
+**Title:** wgsql — a tiny WGSL/Rust aggregation kernel that runs natively
+and in the browser
 
-**1:25–1:30** End slide:
-  - github.com/shiahonb777/wgsql
-  - shiahonb777.github.io/wgsql
-  - MIT, v0.1, ~388 KB wasm
+(Same body.)
+
+## Demo capture
+
+A 30-second screen recording is sufficient. Capture, in order:
+
+1. Page loaded, "Ready on BrowserWebGpu / Apple M4 Pro" line visible.
+2. Default scenario (Equity trades). Drag the slider quickly across its
+   full range. The right column updates each frame; the left lags behind
+   the slider position by several frames and shows "Behind by N frames."
+3. Switch to Game leaderboard. Drag again. Same pattern, larger gap.
+4. Click `Run 5-second sweep`. The slider sweeps automatically. The
+   sparklines underneath each latency strip show the shape difference: a
+   roughly flat line on the right (GPU), a noisier and higher line on the
+   left (JS Map).
+5. Scroll to the benchmark table, click `Run`, wait for the row to fill in.
+6. End on the GitHub URL.
 
 ## Pre-launch checklist
 
-- [ ] Refresh demo, confirm side-by-side race shows clear lag in all
-      four scenarios when slider is dragged quickly
-- [ ] Verify left panel correctly shows "stale" when behind the user
-- [ ] Verify the speedup banner stays in the 5–15× range across
-      scenarios (low-cardinality 🚖 may dip to 1.5–3×; that's expected)
-- [ ] README datasheet matches today's numbers (re-run if stale)
-- [ ] First issue ("Help wanted: i64 keys") opened to seed contributor
-      activity
-- [ ] OG image: a screen-capture of the split panels mid-drag with
-      visible lag on the left
+- Refresh the demo on a fresh browser session and confirm the latency gap
+  is visible in all four scenarios when the slider is dragged quickly.
+- Verify the headline figure shows live numbers (not the placeholder
+  dashes) within a few seconds of load.
+- Check the Parquet drop-zone with at least one real file.
+- Re-run the README datasheet on the day of and update if anything
+  changed.
+- Open one issue on the repo (e.g. *Help wanted: GROUP BY on i64 keys*)
+  to seed contributor activity.
 
-## Communities to seed
+## Communities, in priority
 
-In rough order of fit:
-- HN Show (the side-by-side race is the visual hook)
-- /r/dataengineering (DuckDB-WASM comparison gives credibility)
-- /r/webdev (frontend folks who fight 10M-row tables; the "Web Worker"
-  framing is targeted at them specifically)
-- /r/rust (Rust + WebGPU)
-- WebGPU Discord (gpuweb)
-- Polars / Arrow community channels
-- Twitter: @gfx_rs, @wgpu_rs, @WebGPU mentions
-- ObservableHQ forums (lots of dashboarders)
+1. Show HN — the side-by-side comparison is the hook.
+2. /r/dataengineering — DuckDB-WASM context gives credibility.
+3. /r/webdev — the audience that fights 10 M-row tables in production.
+4. /r/rust — Rust + WebGPU.
+5. WebGPU Discord (`gpuweb`).
+6. Polars / Arrow community channels.
+7. Twitter, mentioning `@gfx_rs`, `@wgpu_rs`, `@WebGPU`.
 
-## What NOT to claim
+## Don't claim
 
-- Don't say "faster than DuckDB" — only DuckDB-WASM in a browser
-  context, only on this workload
-- Don't say "complete SQL engine" — it's GROUP BY + WHERE + multi-agg
-  + inner JOIN at v0.1
-- Don't promise WASM size below current ~388 KB
-- Don't promise i64 keys, OUTER JOIN, or string keys for v0.1 — they're
-  not in
-- The honest pitch: "GPU OLAP primitive, in the browser, no server,
-  faster than JS even when JS is in a worker"
+- "Faster than DuckDB." Only DuckDB-WASM, only this workload.
+- "Complete SQL engine." It's `GROUP BY` + `WHERE` + multi-agg + inner JOIN.
+- A WASM size below the current ~388 KB. It's whatever it is.
+- `i64` / OUTER JOIN / string keys for v0.1. They're not in.
+
+The honest pitch is on the README's first paragraph.

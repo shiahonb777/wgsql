@@ -103,12 +103,12 @@ async function boot() {
     return;
   }
   $("status").innerHTML =
-    "<span class='ok'>wgsql ready</span> on " +
-    "<code>" + engine.backend + "</code> / " +
+    "<span class='ok'>Ready</span> on " +
+    "<code>" + engine.backend + "</code> · " +
     "<code>" + engine.adapterName + "</code>";
   $("bench-card").style.display = "block";
   $("dashboard").style.display = "block";
-  $("versus").style.display = "grid";
+  $("figure").style.display = "grid";
   log("[boot] backend=" + engine.backend + " adapter=" + engine.adapterName);
 
   initScenarios();
@@ -129,8 +129,7 @@ function initScenarios() {
     const tab = document.createElement("div");
     tab.className = "tab";
     tab.dataset.idx = String(i);
-    tab.innerHTML = `<span class="tab-emoji">${s.emoji}</span>` +
-                    `<span>${s.title}</span>` +
+    tab.innerHTML = `<span>${s.title}</span>` +
                     `<span class="tab-meta">${s.metaShort}</span>`;
     tab.addEventListener("click", () => selectScenario(i));
     tabs.appendChild(tab);
@@ -179,8 +178,8 @@ async function selectScenario(idx) {
   state.gpuRunning = false;
   state.gpuPendingValue = 0;
   updateMoves();
-  drawSpark("left-spark", state.leftHistory, "var(--left)");
-  drawSpark("right-spark", state.rightHistory, "var(--right)");
+  drawSpark("left-spark", state.leftHistory, "var(--text-faint)");
+  drawSpark("right-spark", state.rightHistory, "var(--accent)");
 
   // Hand a copy to the JS worker.
   if (!state.jsWorker) {
@@ -237,7 +236,7 @@ function onWorkerMessage(e) {
   state.leftHistory.push(m.ms);
   if (state.leftHistory.length > HISTORY_LEN) state.leftHistory.shift();
   renderPanel("left", m);
-  drawSpark("left-spark", state.leftHistory, "#f87171");
+  drawSpark("left-spark", state.leftHistory, "#6b6a64");
   updateMoves();
 }
 
@@ -278,7 +277,7 @@ async function gpuLoop() {
       top: rows.slice(0, 20),
       ms,
     });
-    drawSpark("right-spark", state.rightHistory, "#4ade80");
+    drawSpark("right-spark", state.rightHistory, "#d97757");
     updateMoves();
     await new Promise(r => setTimeout(r, 0));
   }
@@ -300,31 +299,23 @@ function renderPanel(side, m) {
   const lb = $(`${side}-lb`);
   lb.innerHTML = "";
   const top = m.top;
-  const max = top.length > 0 ? top[0].sum : 1;
   for (let i = 0; i < top.length; i++) {
     const r = top[i];
     const row = document.createElement("div");
     row.className = "lb-row";
-    const rankCls = i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : "";
     const name = labelFor(scn, r.key) || ("#" + r.key);
     const sub  = sublabelFor(scn, r.key);
-    const avatar = avatarFor(scn, r.key);
-    const widthPct = max > 0 ? (r.sum / max * 100).toFixed(1) : 0;
     row.innerHTML =
-      `<span class="lb-rank ${rankCls}">${i+1}</span>` +
-      `<div class="lb-avatar">${avatar}</div>` +
+      `<span class="lb-rank">${(i+1).toString().padStart(2, "0")}</span>` +
       `<div class="lb-name">` +
         `<div class="lb-name-main">${escapeHTML(name)}</div>` +
         (sub ? `<div class="lb-name-sub">${escapeHTML(sub)}</div>` : "") +
       `</div>` +
-      `<div class="lb-bar-cell">` +
-        `<div class="lb-value">${formatSum(scn, r.sum)}</div>` +
-        `<div class="lb-bar-track"><div class="lb-bar-fill" style="width:${widthPct}%"></div></div>` +
-      `</div>`;
+      `<div class="lb-value">${formatSum(scn, r.sum)}</div>`;
     lb.appendChild(row);
   }
   if (top.length === 0) {
-    lb.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-size:12.5px">no rows match this filter</div>`;
+    lb.innerHTML = `<div class="lb-empty">No rows match this filter.</div>`;
   }
 }
 
@@ -336,17 +327,17 @@ function escapeHTML(s) {
 
 function drawSpark(svgId, data, color) {
   const svg = $(svgId);
-  const w = 240, h = 28;
+  const w = 240, h = 32;
   if (data.length < 2) { svg.innerHTML = ""; return; }
   const max = Math.max(...data, 1);
   const stepX = w / (HISTORY_LEN - 1);
   const points = data.map((v, i) => {
     const x = i * stepX;
-    const y = h - (v / max) * (h - 2) - 1;
+    const y = h - (v / max) * (h - 4) - 2;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
   svg.innerHTML = `
-    <polyline fill="none" stroke="${color}" stroke-width="1.5"
+    <polyline fill="none" stroke="${color}" stroke-width="1.25"
               stroke-linejoin="round" stroke-linecap="round"
               points="${points}"
               opacity="0.85" />
@@ -365,35 +356,35 @@ function updateMoves() {
   const leftLagged = left !== null && left !== cur;
   const rightLagged = right !== null && right !== cur;
 
+  const leftState = $("left-state");
+  const rightState = $("right-state");
   if (leftLagged) {
-    $("left-latency").classList.add("lag-warn");
-    $("left-tag").innerHTML = `<span class="stale-tag">stale · still computing</span>`;
-    $("left-shimmer").classList.add("visible");
+    leftState.textContent = "Behind by " + (state.movesCount - state.leftFrames) + " frames";
+    leftState.classList.add("stale");
   } else {
-    $("left-latency").classList.remove("lag-warn");
-    $("left-tag").innerHTML = `<span class="live-tag"><span class="live-dot"></span>live</span>`;
-    $("left-shimmer").classList.remove("visible");
+    leftState.textContent = state.leftFrames > 0 ? "Up to date" : "idle";
+    leftState.classList.remove("stale");
   }
   if (rightLagged) {
-    $("right-latency").classList.add("lag-warn");
-    $("right-tag").innerHTML = `<span class="stale-tag">stale</span>`;
+    rightState.textContent = "Catching up";
+    rightState.classList.add("stale");
   } else {
-    $("right-latency").classList.remove("lag-warn");
-    $("right-tag").innerHTML = `<span class="live-tag"><span class="live-dot"></span>live</span>`;
+    rightState.textContent = state.rightFrames > 0 ? "Up to date" : "idle";
+    rightState.classList.remove("stale");
   }
 
-  // Hero strip
+  // Headline figure.
   if (state.leftMs > 0) {
-    $("versus-l-ms").textContent = fmt.ms(state.leftMs);
-    $("versus-l-fps").textContent = fmt.fps(state.leftMs);
+    $("fig-l-ms").textContent = fmt.ms(state.leftMs);
+    $("fig-l-fps").textContent = fmt.fps(state.leftMs);
   }
   if (state.rightMs > 0) {
-    $("versus-r-ms").textContent = fmt.ms(state.rightMs);
-    $("versus-r-fps").textContent = fmt.fps(state.rightMs);
+    $("fig-r-ms").textContent = fmt.ms(state.rightMs);
+    $("fig-r-fps").textContent = fmt.fps(state.rightMs);
   }
   if (state.leftMs > 0 && state.rightMs > 0) {
     const x = state.leftMs / state.rightMs;
-    $("versus-x").textContent = x.toFixed(1) + "×";
+    $("fig-x").textContent = x.toFixed(1) + "×";
   }
 }
 
@@ -424,7 +415,7 @@ $("autodrag-btn").addEventListener("click", () => {
   autodragRunning = true;
   const btn = $("autodrag-btn");
   btn.disabled = true;
-  btn.textContent = "▶ Running…";
+  btn.textContent = "Sweeping…";
   const slider = $("slider");
   const max = parseInt(slider.max, 10);
   const start = performance.now();
@@ -435,7 +426,7 @@ $("autodrag-btn").addEventListener("click", () => {
       slider.value = "0";
       setSlider(0);
       btn.disabled = false;
-      btn.textContent = "▶ Auto-drag (5s)";
+      btn.textContent = "Run 5-second sweep";
       autodragRunning = false;
       return;
     }
@@ -507,12 +498,12 @@ async function runBench() {
       const dr = await duckDBGroupBy(keys, values);
       log(`  duckdb     ${dr.totalMs.toFixed(1)} ms (ingest ${dr.ingestMs.toFixed(0)} + query ${dr.queryMs.toFixed(0)})`);
       duckRow = `<tr><td>DuckDB-WASM (CSV ingest + GROUP BY)</td>` +
-                `<td class="num">${dr.totalMs.toFixed(1)} ms</td>` +
-                `<td class="num">${(n / dr.totalMs / 1000).toFixed(1)} M rows/s</td></tr>`;
+                `<td class="numeric">${dr.totalMs.toFixed(1)} ms</td>` +
+                `<td class="numeric">${(n / dr.totalMs / 1000).toFixed(1)} M rows/s</td></tr>`;
       speedupVsDuck = dr.totalMs / tGpu;
     } catch (e) {
       log(`  duckdb     ERROR: ${e}`, "err");
-      duckRow = `<tr><td>DuckDB-WASM</td><td class="num err" colspan="2">init failed: ${e}</td></tr>`;
+      duckRow = `<tr><td>DuckDB-WASM</td><td class="numeric" colspan="2"><span class="err">init failed</span>: ${e}</td></tr>`;
     }
   }
 
@@ -528,23 +519,21 @@ async function runBench() {
     checked++;
   }
   const correctness = (matches === checked && cpuMap.size === gpuRows)
-    ? `<span class='ok'>OK</span> (${gpuRows} groups, ${matches}/${checked} sums match)`
-    : `<span class='err'>MISMATCH</span> (gpu ${gpuRows} groups vs cpu ${cpuMap.size}, ${matches}/${checked} sums match)`;
+    ? `<span class='ok'>matches</span> (${gpuRows} groups, ${matches}/${checked} sums)`
+    : `<span class='err'>mismatch</span> (gpu ${gpuRows} groups vs cpu ${cpuMap.size}, ${matches}/${checked} sums match)`;
 
   $("results-body").innerHTML = `
-    <tr><td>data generation</td><td class="num">${tGen.toFixed(1)} ms</td><td class="num muted">— host</td></tr>
-    <tr><td>JS baseline (Map)</td><td class="num">${tCpu.toFixed(1)} ms</td><td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
+    <tr><td>data generation</td><td class="numeric">${tGen.toFixed(1)} ms</td><td class="numeric">— host</td></tr>
+    <tr><td>JS Map (single thread)</td><td class="numeric">${tCpu.toFixed(1)} ms</td><td class="numeric">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
     ${duckRow}
-    <tr><td><strong>wgsql GPU</strong></td><td class="num"><strong>${tGpu.toFixed(1)} ms</strong></td><td class="num"><strong>${(n / tGpu / 1000).toFixed(1)} M rows/s</strong></td></tr>
+    <tr><td>wgsql GPU</td><td class="numeric">${tGpu.toFixed(1)} ms</td><td class="numeric">${(n / tGpu / 1000).toFixed(1)} M rows/s</td></tr>
   `;
   const speedup = tCpu / tGpu;
-  const cls = speedup >= 1 ? "ok" : "warn";
-  let speedupHtml = `<strong class="${cls}">${speedup.toFixed(2)}× </strong> GPU vs JS Map.`;
+  let speedupHtml = `${speedup.toFixed(2)}× over JS Map.`;
   if (speedupVsDuck != null) {
-    const cls2 = speedupVsDuck >= 1 ? "ok" : "warn";
-    speedupHtml += `&nbsp; <strong class="${cls2}">${speedupVsDuck.toFixed(2)}×</strong> GPU vs DuckDB-WASM.`;
+    speedupHtml += ` ${speedupVsDuck.toFixed(2)}× over DuckDB-WASM.`;
   }
-  speedupHtml += `&nbsp; ${correctness}`;
+  speedupHtml += ` &middot; ${correctness}`;
   $("speedup").innerHTML = speedupHtml;
   $("results").style.display = "block";
 
@@ -606,10 +595,10 @@ async function loadParquetFile(file) {
   $("runFile").classList.remove("ghost");
   $("runFile").textContent = `Run on ${file.name}`;
   $("fileResults").innerHTML = `
-    <div class="muted" style="font-size:12px">
-      ready: ${n.toLocaleString()} rows, columns
-      <code>${kCol}</code> + <code>${vCol}</code>
-    </div>
+    <p class="meta">
+      Ready: ${n.toLocaleString()} rows, columns
+      <code>${escapeHTML(kCol)}</code> + <code>${escapeHTML(vCol)}</code>.
+    </p>
   `;
 }
 
@@ -635,23 +624,22 @@ async function runFileBench() {
 
   const gpuRows = flat.length / 3;
   const speedup = tCpu / tGpu;
-  const cls = speedup >= 1 ? "ok" : "warn";
   $("fileResults").innerHTML = `
     <table>
-      <thead><tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr></thead>
+      <thead><tr><th>step</th><th class="numeric">time</th><th class="numeric">throughput</th></tr></thead>
       <tbody>
         <tr><td>JS Map (${cpu.size.toLocaleString()} groups)</td>
-            <td class="num">${tCpu.toFixed(1)} ms</td>
-            <td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
-        <tr><td><strong>wgsql GPU (${gpuRows.toLocaleString()} groups)</strong></td>
-            <td class="num"><strong>${tGpu.toFixed(1)} ms</strong></td>
-            <td class="num"><strong>${(n / tGpu / 1000).toFixed(1)} M rows/s</strong></td></tr>
+            <td class="numeric">${tCpu.toFixed(1)} ms</td>
+            <td class="numeric">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
+        <tr><td>wgsql GPU (${gpuRows.toLocaleString()} groups)</td>
+            <td class="numeric">${tGpu.toFixed(1)} ms</td>
+            <td class="numeric">${(n / tGpu / 1000).toFixed(1)} M rows/s</td></tr>
       </tbody>
     </table>
-    <div style="margin-top:8px">
-      <strong class="${cls}">${speedup.toFixed(2)}× </strong> GPU vs JS Map on ${fileName}
-      (<code>${n.toLocaleString()}</code> rows, group key = <code>${kCol}</code>)
-    </div>
+    <p class="meta">
+      ${speedup.toFixed(2)}× over JS Map on ${escapeHTML(fileName)}
+      (<code>${n.toLocaleString()}</code> rows, group key = <code>${escapeHTML(kCol)}</code>)
+    </p>
   `;
   log(`[fileRun] cpu ${tCpu.toFixed(0)} ms, gpu ${tGpu.toFixed(0)} ms, speedup ${speedup.toFixed(2)}x`);
   $("runFile").disabled = false;
@@ -659,11 +647,11 @@ async function runFileBench() {
 
 const dz = $("dropzone");
 dz.addEventListener("click", () => $("fileInput").click());
-dz.addEventListener("dragover", e => { e.preventDefault(); dz.style.borderColor = "var(--accent)"; });
-dz.addEventListener("dragleave", e => { e.preventDefault(); dz.style.borderColor = "var(--border)"; });
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("over"); });
+dz.addEventListener("dragleave", e => { e.preventDefault(); dz.classList.remove("over"); });
 dz.addEventListener("drop", async e => {
   e.preventDefault();
-  dz.style.borderColor = "var(--border)";
+  dz.classList.remove("over");
   const f = e.dataTransfer.files[0];
   if (f) {
     try { await loadParquetFile(f); }

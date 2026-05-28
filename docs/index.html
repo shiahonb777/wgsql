@@ -3,703 +3,737 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wgsql — JavaScript vs GPU, 10M rows, in your browser</title>
+<title>wgsql · GPU SQL aggregation, in a browser tab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0b0d12;
-    --surface: #14171f;
-    --surface-2: #1c2029;
-    --surface-3: #252a35;
-    --text: #f1f3f9;
-    --muted: #9aa1ad;
-    --dim: #6b7280;
-    --accent: #6ab0ff;
-    --accent-2: #8b5cf6;
-    --good: #4ade80;
-    --warn: #fbbf24;
-    --bad:  #f87171;
-    --border: #2a2f3a;
-    --left:  #f87171;
-    --left-bg: rgba(248,113,113,0.08);
-    --right: #4ade80;
-    --right-bg: rgba(74,222,128,0.08);
+    /* Surfaces */
+    --surface:        #faf9f5;
+    --surface-sunken: #f3f1ea;
+    --surface-raised: #ffffff;
+
+    /* Text */
+    --text:        #141413;
+    --text-muted:  #6b6a64;
+    --text-faint:  #b0aea5;
+
+    /* Borders */
+    --border:        #e8e6dc;
+    --border-strong: #c9c5b8;
+
+    /* Accents */
+    --accent:       #d97757;  /* terra cotta — GPU side, used sparingly */
+    --accent-blue:  #6a9bcc;
+    --accent-green: #788c5d;
+
+    /* Semantic */
+    --danger: #b54545;
+
+    /* Type */
+    --font-head: "Poppins", "Helvetica Neue", Arial, sans-serif;
+    --font-body: "Lora", Georgia, "Times New Roman", serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
   }
+
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI",
-          Roboto, sans-serif;
-    background: var(--bg);
+    background: var(--surface);
     color: var(--text);
+    font: 400 17px/1.65 var(--font-body);
+    font-feature-settings: "onum";
     min-height: 100vh;
-    padding: 20px 16px 80px;
+    padding: 64px 24px 96px;
   }
-  .wrap { max-width: 1200px; margin: 0 auto; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .measure { max-width: 640px; }
 
-  /* hero header */
-  .hero { padding: 6px 0 16px; }
+  /* Typography */
+  h1, h2, h3, h4 {
+    font-family: var(--font-head);
+    font-weight: 500;
+    color: var(--text);
+    margin: 0;
+  }
   h1 {
-    font-size: 32px;
-    margin: 0 0 6px;
-    letter-spacing: -0.02em;
-    font-weight: 700;
+    font-size: 2.25rem;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    font-weight: 600;
   }
-  .h-grad {
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+  h2 {
+    font-size: 1.375rem;
+    line-height: 1.25;
+    letter-spacing: -0.005em;
+    font-weight: 500;
+    margin: 64px 0 16px;
   }
-  .subtitle { margin: 0 0 6px; color: var(--text); font-size: 17px; line-height: 1.4; }
-  .subtitle b { font-weight: 600; }
-  .subtitle .red { color: var(--left); }
-  .subtitle .green { color: var(--right); }
-  .meta-line { color: var(--muted); font-size: 13px; }
-  .meta-line a { color: var(--accent); text-decoration: none; }
-  .meta-line a:hover { text-decoration: underline; }
+  h3 {
+    font-size: 1rem;
+    line-height: 1.4;
+    font-weight: 500;
+    margin: 0;
+  }
+  p { margin: 0 0 16px; }
+  a {
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: 1px solid var(--border-strong);
+    transition: border-color 0.2s;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+  a.accent {
+    color: var(--accent);
+    border-bottom-color: rgba(217, 119, 87, 0.4);
+  }
+  a.accent:hover { border-bottom-color: var(--accent); }
+  code {
+    font: 0.92em var(--font-mono);
+    background: var(--surface-sunken);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  small { font-size: 0.875rem; line-height: 1.5; color: var(--text-muted); }
+  .meta { color: var(--text-muted); font-size: 0.875rem; }
+  .num { font-feature-settings: "lnum", "tnum"; }
+  hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 48px 0;
+  }
 
-  /* hero comparison strip */
-  .versus {
+  /* Header */
+  header { margin-bottom: 48px; }
+  .title-line {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .title-line h1 { font-family: var(--font-head); }
+  .title-line .repo {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    font-family: var(--font-body);
+  }
+  .lead {
+    font-size: 1.0625rem;
+    line-height: 1.7;
+    max-width: 640px;
+    color: var(--text);
+  }
+  .lead em {
+    font-style: italic;
+    color: var(--text);
+  }
+  .links {
+    margin-top: 16px;
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+  }
+  .links a { margin-right: 18px; }
+
+  /* Boot card */
+  .boot {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 0.9375rem;
+    color: var(--text-muted);
+    margin-bottom: 32px;
+  }
+  .boot .ok { color: var(--accent-green); font-weight: 500; font-family: var(--font-head); }
+  .boot .err { color: var(--danger); font-weight: 500; font-family: var(--font-head); }
+
+  /* Headline figure (the comparison number) */
+  .figure {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
-    gap: 16px;
-    align-items: center;
-    padding: 14px 18px;
-    background: linear-gradient(135deg, rgba(248,113,113,0.04), rgba(74,222,128,0.04));
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin: 12px 0 16px;
+    gap: 48px;
+    align-items: end;
+    padding: 32px 0 24px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    margin: 0 0 40px;
   }
-  .versus-side { display: flex; align-items: center; gap: 14px; }
-  .versus-side.right { justify-content: flex-end; }
-  .versus-icon {
-    font-size: 22px;
-    width: 38px; height: 38px;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 8px;
+  .figure-col h3 {
+    font-family: var(--font-head);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-bottom: 8px;
   }
-  .versus-side.left  .versus-icon { background: var(--left-bg);  }
-  .versus-side.right .versus-icon { background: var(--right-bg); }
-  .versus-name { font-size: 13px; color: var(--muted); margin: 0 0 2px; }
-  .versus-stats { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-  .versus-side.left  .versus-stats { color: var(--left);  }
-  .versus-side.right .versus-stats { color: var(--right); }
-  .versus-stats .ms { font-size: 20px; }
-  .versus-stats .fps { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 6px; }
-  .versus-mid {
+  .figure-num {
+    font-family: var(--font-head);
+    font-size: 2.5rem;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    font-feature-settings: "lnum", "tnum";
+  }
+  .figure-num small {
+    font-size: 0.875rem;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 6px;
+    font-family: var(--font-body);
+  }
+  .figure-col.right { text-align: right; }
+  .figure-col.right .figure-num { color: var(--accent); }
+  .figure-mid {
     text-align: center;
     padding: 0 8px;
   }
-  .versus-mid .x {
-    font-size: 28px; font-weight: 700;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    line-height: 1;
-    font-variant-numeric: tabular-nums;
+  .figure-mid .x {
+    font-family: var(--font-head);
+    font-size: 1.75rem;
+    font-weight: 500;
+    color: var(--text);
     letter-spacing: -0.02em;
+    font-feature-settings: "lnum", "tnum";
   }
-  .versus-mid .x-label {
-    font-size: 10px;
-    color: var(--muted);
+  .figure-mid .x-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-top: 4px;
   }
 
-  h2 {
-    font-size: 12.5px;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 600;
-    margin: 22px 0 8px;
-  }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px;
-    margin: 8px 0;
-  }
-  button {
-    background: var(--accent);
-    color: #0b1220;
-    border: 0;
-    border-radius: 6px;
-    padding: 8px 14px;
-    font-weight: 600;
-    cursor: pointer;
-    font-size: 13px;
-  }
-  button.primary {
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: white;
-    padding: 9px 18px;
-    font-size: 13.5px;
-  }
-  button.ghost {
-    background: var(--surface-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-  }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  label { color: var(--muted); display: inline-block; margin-right: 6px; }
-  select, input[type="text"], input[type="number"] {
-    background: #0b0e13;
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 10px;
-    border-radius: 6px;
-    margin-right: 8px;
-  }
-  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-  td, th {
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    text-align: left;
-  }
-  th { color: var(--muted); font-weight: 500; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .ok  { color: var(--good); }
-  .warn { color: var(--warn); }
-  .err { color: var(--bad); }
-  .muted { color: var(--muted); }
-  .dim { color: var(--dim); }
-  pre {
-    background: #0b0e13;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px 12px;
-    margin: 0;
-    overflow-x: auto;
-    font-size: 12px;
-    max-height: 200px;
-  }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; }
-
-  /* scenario tabs */
+  /* Scenario tabs */
   .tabs {
     display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin: 4px 0 4px;
+    gap: 0;
+    margin: 0 0 24px;
+    border-bottom: 1px solid var(--border);
   }
   .tab {
-    background: var(--surface-2);
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 9px 16px;
+    padding: 12px 20px 14px;
     cursor: pointer;
-    font-size: 13.5px;
-    transition: all 0.15s;
+    color: var(--text-muted);
+    font-family: var(--font-head);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
     user-select: none;
+    transition: color 0.15s, border-color 0.15s;
   }
-  .tab:hover { color: var(--text); border-color: var(--surface-3); }
+  .tab:hover { color: var(--text); }
   .tab.active {
     color: var(--text);
-    background: linear-gradient(135deg, rgba(106,176,255,0.18), rgba(139,92,246,0.18));
-    border-color: var(--accent);
+    border-bottom-color: var(--accent);
   }
-  .tab .tab-emoji { margin-right: 6px; font-size: 15px; }
-  .tab .tab-meta { color: var(--dim); font-size: 11.5px; margin-left: 8px; }
-  .tab.active .tab-meta { color: var(--muted); }
+  .tab .tab-meta {
+    display: block;
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+    font-weight: 400;
+    margin-top: 2px;
+  }
+  .tab.active .tab-meta { color: var(--text-muted); }
 
-  /* shared slider */
-  .slider-row {
-    display: grid;
-    grid-template-columns: auto auto 1fr auto;
-    gap: 14px;
-    align-items: center;
+  .scenario-desc {
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+    margin: 0 0 32px;
+    max-width: 640px;
+    line-height: 1.6;
   }
-  .slider-row input[type=range] {
-    accent-color: var(--accent);
-    height: 6px;
+
+  /* Slider row */
+  .controls {
+    display: grid;
+    grid-template-columns: minmax(160px, auto) auto 1fr auto;
+    gap: 16px;
+    align-items: center;
+    margin: 0 0 12px;
+  }
+  .controls label {
+    font-family: var(--font-head);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text);
   }
   .pill {
     display: inline-block;
-    background: var(--surface-2);
-    color: var(--accent);
-    border-radius: 999px;
-    padding: 4px 14px;
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-    border: 1px solid var(--border);
-    min-width: 80px;
-    text-align: center;
+    color: var(--text);
+    font-family: var(--font-head);
+    font-feature-settings: "lnum", "tnum";
+    font-size: 0.9375rem;
     font-weight: 500;
+    min-width: 64px;
+    text-align: left;
   }
-  .controls-row {
-    display: flex;
-    gap: 10px;
-    margin-top: 10px;
-    align-items: center;
-    flex-wrap: wrap;
+  input[type=range] {
+    accent-color: var(--accent);
+    height: 4px;
   }
-  .moves-counter {
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
-    font-size: 12.5px;
-    margin-left: auto;
+  button {
+    background: var(--text);
+    color: var(--surface);
+    border: 0;
+    border-radius: 6px;
+    padding: 9px 16px;
+    font: 500 0.875rem var(--font-head);
+    cursor: pointer;
   }
-  .moves-counter b { color: var(--text); font-weight: 600; }
-  .moves-counter .frames-l { color: var(--left); }
-  .moves-counter .frames-r { color: var(--right); }
+  button:hover { background: #2d2c2a; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+  }
+  button.ghost:hover { background: var(--surface-sunken); }
+  .moves {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    font-feature-settings: "lnum", "tnum";
+    font-family: var(--font-body);
+  }
+  .moves b { color: var(--text); font-weight: 600; }
 
-  /* split panels */
+  /* Split panels */
   .split {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-top: 12px;
+    gap: 32px;
+    margin: 32px 0 0;
   }
-  @media (max-width: 880px) { .split { grid-template-columns: 1fr; } }
+  @media (max-width: 880px) { .split { grid-template-columns: 1fr; gap: 48px; } }
 
-  .panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px;
-    position: relative;
-    overflow: hidden;
-  }
-  .panel.left  { box-shadow: inset 0 2px 0 var(--left);  }
-  .panel.right { box-shadow: inset 0 2px 0 var(--right); }
+  .panel { position: relative; }
   .panel-head {
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-name {
+    font-family: var(--font-head);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+  .panel.right .panel-name { color: var(--accent); }
+  .panel-sub {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    margin-top: 2px;
+    line-height: 1.5;
+  }
+
+  .lat-line {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }
-  .panel-title-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .lat-num {
+    font-family: var(--font-head);
+    font-size: 1.5rem;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: -0.01em;
+    font-feature-settings: "lnum", "tnum";
   }
-  .panel-icon {
-    width: 28px; height: 28px;
-    border-radius: 6px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px;
+  .panel.right .lat-num { color: var(--accent); }
+  .lat-fps {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-left: 6px;
+    font-family: var(--font-head);
+    font-feature-settings: "lnum", "tnum";
   }
-  .panel.left  .panel-icon { background: var(--left-bg); }
-  .panel.right .panel-icon { background: var(--right-bg); }
-  .panel-title { font-size: 14.5px; font-weight: 600; }
-  .panel.left  .panel-title { color: var(--left); }
-  .panel.right .panel-title { color: var(--right); }
-  .panel-sub { color: var(--muted); font-size: 11.5px; }
-
-  .latency-strip {
-    background: var(--surface-2);
-    border-radius: 8px;
-    padding: 10px 12px;
-    margin-bottom: 12px;
-    font-variant-numeric: tabular-nums;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    transition: background 0.2s;
+  .lat-state {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    font-family: var(--font-body);
+    font-feature-settings: "lnum", "tnum";
   }
-  .latency-strip.lag-warn {
-    background: rgba(248,113,113,0.14);
-    animation: pulseRed 1.2s ease-in-out infinite;
-  }
-  @keyframes pulseRed {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
-    50%      { box-shadow: 0 0 0 4px rgba(248,113,113,0.18); }
-  }
-  .latency-num {
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-  }
-  .panel.left  .latency-num { color: var(--left); }
-  .panel.right .latency-num { color: var(--right); }
-  .latency-fps { color: var(--muted); font-size: 12px; margin-left: 8px; }
-  .stale-tag {
-    color: var(--bad); font-weight: 600; font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-  }
-  .live-tag {
-    color: var(--good); font-weight: 500; font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: 0.06em;
-  }
-  .live-dot {
-    display: inline-block;
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--good);
-    margin-right: 4px;
-    box-shadow: 0 0 6px var(--good);
-    animation: liveDot 1.4s ease-in-out infinite;
-  }
-  @keyframes liveDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .lat-state.stale { color: var(--text); font-weight: 500; }
 
   .sparkline {
     width: 100%;
-    height: 28px;
-    margin-top: 8px;
-    margin-bottom: 8px;
+    height: 32px;
     display: block;
+    margin: 4px 0 24px;
   }
 
-  .kpi-row {
+  .stats {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-bottom: 12px;
+    gap: 24px;
+    margin-bottom: 28px;
   }
-  .kpi {
-    background: var(--surface-2);
-    border-radius: 8px;
-    padding: 10px 12px;
-  }
-  .kpi .label {
-    color: var(--muted);
-    font-size: 10px;
+  .stat .stat-label {
+    font-family: var(--font-head);
+    font-size: 0.6875rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 3px;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
   }
-  .kpi .value {
-    font-size: 18px;
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
+  .stat .stat-value {
+    font-family: var(--font-head);
+    font-size: 1.125rem;
+    font-weight: 500;
+    color: var(--text);
+    font-feature-settings: "lnum", "tnum";
     letter-spacing: -0.01em;
   }
 
-  /* leaderboard rows */
-  .lb-header {
+  /* Leaderboard rows — typographic, no card chrome */
+  .lb-head {
     display: grid;
-    grid-template-columns: 26px 32px 1fr auto;
-    gap: 10px;
-    color: var(--dim);
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0 4px 6px;
+    grid-template-columns: 22px 1fr auto;
+    gap: 12px;
+    padding: 0 0 6px;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 4px;
+    color: var(--text-muted);
+    font-family: var(--font-head);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 500;
   }
-  .lb { width: 100%; }
   .lb-row {
     display: grid;
-    grid-template-columns: 26px 32px 1fr auto;
-    gap: 10px;
-    align-items: center;
-    padding: 6px 4px;
-    border-radius: 6px;
-    font-variant-numeric: tabular-nums;
-    transition: background 0.12s;
+    grid-template-columns: 22px 1fr auto;
+    gap: 12px;
+    align-items: baseline;
+    padding: 6px 0 5px;
+    border-bottom: 1px solid var(--border);
+    font-feature-settings: "lnum", "tnum";
   }
-  .lb-row:hover { background: var(--surface-2); }
+  .lb-row:last-child { border-bottom: 0; }
   .lb-rank {
-    color: var(--dim);
-    font-size: 12px;
+    color: var(--text-faint);
+    font-family: var(--font-head);
+    font-size: 0.75rem;
+    font-weight: 400;
     text-align: right;
-  }
-  .lb-rank.top1 { color: #fbbf24; font-weight: 600; }
-  .lb-rank.top2 { color: #cbd5e1; font-weight: 600; }
-  .lb-rank.top3 { color: #d97706; font-weight: 600; }
-  .lb-avatar {
-    width: 28px; height: 28px;
-    background: var(--surface-3);
-    border-radius: 6px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 14px;
+    line-height: 1.2;
   }
   .lb-name {
     min-width: 0;
+    line-height: 1.3;
   }
   .lb-name-main {
-    font-weight: 500;
-    font-size: 13px;
+    font-family: var(--font-body);
+    font-size: 0.9375rem;
+    color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .lb-name-sub {
-    color: var(--muted);
-    font-size: 11.5px;
+    font-family: var(--font-body);
+    color: var(--text-muted);
+    font-size: 0.75rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    margin-top: 1px;
   }
-  .lb-bar-cell {
-    display: flex; flex-direction: column; align-items: flex-end;
-    min-width: 110px;
-  }
-  .lb-bar-track {
-    height: 5px;
-    width: 110px;
-    background: var(--surface-3);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-top: 4px;
-  }
-  .lb-bar-fill {
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.12s ease-out;
-  }
-  .panel.left  .lb-bar-fill { background: linear-gradient(90deg, var(--left), #fb7185); }
-  .panel.right .lb-bar-fill { background: linear-gradient(90deg, var(--right), #34d399); }
   .lb-value {
-    font-weight: 600;
-    font-size: 13px;
+    font-family: var(--font-head);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text);
+    text-align: right;
+    line-height: 1.3;
+    font-feature-settings: "lnum", "tnum";
+  }
+  .lb-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 32px 0;
+    font-style: italic;
   }
 
-  /* Stale shimmer overlay on left when computing */
-  .stale-shimmer {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: linear-gradient(110deg,
-      transparent 30%,
-      rgba(248,113,113,0.06) 50%,
-      transparent 70%);
-    background-size: 200% 100%;
-    opacity: 0;
-    transition: opacity 0.2s;
+  /* Bench panel */
+  .bench-controls {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
   }
-  .stale-shimmer.visible { opacity: 1; animation: shimmer 1.6s linear infinite; }
-  @keyframes shimmer {
-    0%   { background-position: 200% 0; }
-    100% { background-position: -100% 0; }
+  .bench-controls label {
+    font-family: var(--font-head);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  select, input[type="text"], input[type="number"] {
+    background: var(--surface-raised);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font: 0.875rem var(--font-head);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-feature-settings: "lnum", "tnum";
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-family: var(--font-head);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  td.numeric { text-align: right; font-feature-settings: "lnum", "tnum"; }
+
+  /* Drop zone */
+  .dropzone {
+    border: 1px dashed var(--border-strong);
+    border-radius: 6px;
+    padding: 28px;
+    text-align: center;
+    color: var(--text-muted);
+    cursor: pointer;
+    background: var(--surface-sunken);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone:hover, .dropzone.over {
+    border-color: var(--accent);
+    background: var(--surface);
   }
 
-  .links { color: var(--muted); font-size: 13px; }
-  .links a { margin-right: 14px; }
-
-  .scenario-desc {
-    color: var(--muted);
-    font-size: 12.5px;
-    margin: 8px 0 6px;
+  /* Log */
+  pre {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin: 0;
+    overflow-x: auto;
+    font: 0.8125rem var(--font-mono);
+    color: var(--text-muted);
+    max-height: 200px;
   }
+  pre .err { color: var(--danger); }
+  pre .ok { color: var(--accent-green); }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-  <header class="hero">
-    <h1>wgsql <span class="h-grad">— see your dashboard breathe</span></h1>
-    <p class="subtitle">
-      Same data. Same query. Same slider.
-      <b class="red">JavaScript Map in a Web Worker</b> on the left,
-      <b class="green">wgsql GPU</b> on the right. 10 million rows.
+  <header>
+    <div class="title-line">
+      <h1>wgsql</h1>
+      <span class="repo">github.com/shiahonb777/wgsql · MIT</span>
+    </div>
+    <p class="lead">
+      A SQL aggregation kernel that runs on the user's GPU through WebGPU.
+      Below, the same query — <code>SELECT key, SUM(value), COUNT(*) WHERE value &ge; ? GROUP BY key</code> —
+      runs twice on every slider movement: once on a JavaScript <code>Map</code> in a Web Worker, and once
+      on the GPU. Same data, same code path, ten million rows. Drag the slider and watch the latency
+      column on each side.
     </p>
-    <p class="meta-line">
-      <a href="https://github.com/shiahonb777/wgsql" target="_blank">GitHub</a> ·
-      <a href="#benchmark">Benchmark vs DuckDB-WASM</a> ·
-      <a href="#parquet">Run on your file</a> ·
-      ~388 KB wasm · MIT
+    <p class="lead">
+      The Web Worker is the most generous JavaScript baseline available in a browser. It gets its own
+      thread and never blocks the UI. The latency you see between the two columns is the cost of an
+      aggregation that doesn't fit in CPU cache.
+    </p>
+    <p class="links">
+      <a href="https://github.com/shiahonb777/wgsql">Source</a>
+      <a href="#benchmark">Benchmark vs DuckDB-WASM</a>
+      <a href="#parquet">Run on your own Parquet</a>
     </p>
   </header>
 
-  <!-- Hero comparison strip — updates live -->
-  <div class="versus" id="versus" style="display:none">
-    <div class="versus-side left">
-      <div class="versus-icon">🐢</div>
-      <div>
-        <div class="versus-name">JavaScript Map · Web Worker</div>
-        <div class="versus-stats"><span class="ms" id="versus-l-ms">—</span><span class="fps" id="versus-l-fps">— FPS</span></div>
-      </div>
-    </div>
-    <div class="versus-mid">
-      <div class="x" id="versus-x">—×</div>
-      <div class="x-label">live speedup</div>
-    </div>
-    <div class="versus-side right">
-      <div>
-        <div class="versus-name" style="text-align:right">wgsql · WebGPU</div>
-        <div class="versus-stats"><span class="ms" id="versus-r-ms">—</span><span class="fps" id="versus-r-fps">— FPS</span></div>
-      </div>
-      <div class="versus-icon">⚡</div>
-    </div>
+  <div class="boot" id="boot-card">
+    <span id="status">Checking WebGPU support…</span>
   </div>
 
-  <div class="card" id="boot-card">
-    <div id="status">checking WebGPU support…</div>
+  <!-- Headline figure -->
+  <div class="figure" id="figure" style="display:none">
+    <div class="figure-col">
+      <h3>JavaScript Map · Web Worker</h3>
+      <div class="figure-num"><span id="fig-l-ms">—</span><small id="fig-l-fps">— FPS</small></div>
+    </div>
+    <div class="figure-mid">
+      <div class="x" id="fig-x">—×</div>
+      <div class="x-label">live</div>
+    </div>
+    <div class="figure-col right">
+      <h3>wgsql · WebGPU</h3>
+      <div class="figure-num"><span id="fig-r-ms">—</span><small id="fig-r-fps">— FPS</small></div>
+    </div>
   </div>
 
   <div id="dashboard" style="display:none">
-    <h2>Pick a scenario · same WGSL kernel, different data</h2>
+
+    <h2>Four scenarios, one kernel.</h2>
     <div class="tabs" id="tabs"></div>
     <p class="scenario-desc" id="scenario-desc"></p>
 
-    <div class="card">
-      <div class="slider-row">
-        <label id="slider-label">slider</label>
-        <span class="pill" id="slider-pill">—</span>
-        <input type="range" id="slider" min="0" max="1000" step="1" value="0">
-        <button id="autodrag-btn" class="primary">▶ Auto-drag (5s)</button>
-      </div>
-      <div class="controls-row">
-        <span class="moves-counter">
-          slider moved <b id="moves-count">0</b> times ·
-          <span class="frames-l">JS frames done <b id="left-frames">0</b></span> ·
-          <span class="frames-r">GPU frames done <b id="right-frames">0</b></span>
-        </span>
-      </div>
+    <div class="controls">
+      <label id="slider-label">slider</label>
+      <span class="pill" id="slider-pill">—</span>
+      <input type="range" id="slider" min="0" max="1000" step="1" value="0">
+      <button id="autodrag-btn">Run 5-second sweep</button>
     </div>
+    <p class="moves">
+      Slider moves <b id="moves-count">0</b> &middot;
+      JS frames <b id="left-frames">0</b> &middot;
+      GPU frames <b id="right-frames">0</b>
+    </p>
 
     <div class="split">
       <div class="panel left">
-        <div class="stale-shimmer" id="left-shimmer"></div>
         <div class="panel-head">
-          <div class="panel-title-line">
-            <div class="panel-icon">🐢</div>
-            <div>
-              <div class="panel-title">JavaScript Map</div>
-              <div class="panel-sub">Web Worker · CPU thread, never blocks UI</div>
-            </div>
-          </div>
+          <div class="panel-name">JavaScript Map</div>
+          <div class="panel-sub">Web Worker · CPU thread, never blocks the UI</div>
         </div>
-        <div class="latency-strip" id="left-latency">
+        <div class="lat-line">
           <div>
-            <span class="latency-num" id="left-ms">—</span>
-            <span class="latency-fps" id="left-fps">— FPS</span>
+            <span class="lat-num" id="left-ms">—</span>
+            <span class="lat-fps" id="left-fps">— FPS</span>
           </div>
-          <div id="left-tag"><span class="live-tag">— idle</span></div>
+          <span class="lat-state" id="left-state">idle</span>
         </div>
-        <svg class="sparkline" id="left-spark" viewBox="0 0 240 28" preserveAspectRatio="none"></svg>
-        <div class="kpi-row">
-          <div class="kpi">
-            <div class="label" id="left-k1-label">total</div>
-            <div class="value" id="left-k1">—</div>
+        <svg class="sparkline" id="left-spark" viewBox="0 0 240 32" preserveAspectRatio="none"></svg>
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-label" id="left-k1-label">total</div>
+            <div class="stat-value" id="left-k1">—</div>
           </div>
-          <div class="kpi">
-            <div class="label">rows</div>
-            <div class="value" id="left-k2">—</div>
+          <div class="stat">
+            <div class="stat-label">rows</div>
+            <div class="stat-value" id="left-k2">—</div>
           </div>
-          <div class="kpi">
-            <div class="label">unique</div>
-            <div class="value" id="left-k3">—</div>
+          <div class="stat">
+            <div class="stat-label">unique</div>
+            <div class="stat-value" id="left-k3">—</div>
           </div>
         </div>
-        <div class="lb-header">
+        <div class="lb-head">
           <span style="text-align:right">#</span>
-          <span></span>
-          <span>name</span>
-          <span style="text-align:right" id="left-col-label">total</span>
+          <span>Name</span>
+          <span style="text-align:right" id="left-col-label">Total</span>
         </div>
-        <div class="lb" id="left-lb"></div>
+        <div id="left-lb"></div>
       </div>
 
       <div class="panel right">
         <div class="panel-head">
-          <div class="panel-title-line">
-            <div class="panel-icon">⚡</div>
-            <div>
-              <div class="panel-title">wgsql · WebGPU</div>
-              <div class="panel-sub">GPU compute · WHERE fused into the kernel</div>
-            </div>
-          </div>
+          <div class="panel-name">wgsql · WebGPU</div>
+          <div class="panel-sub">GPU compute · WHERE fused into the aggregation pass</div>
         </div>
-        <div class="latency-strip" id="right-latency">
+        <div class="lat-line">
           <div>
-            <span class="latency-num" id="right-ms">—</span>
-            <span class="latency-fps" id="right-fps">— FPS</span>
+            <span class="lat-num" id="right-ms">—</span>
+            <span class="lat-fps" id="right-fps">— FPS</span>
           </div>
-          <div id="right-tag"><span class="live-tag">— idle</span></div>
+          <span class="lat-state" id="right-state">idle</span>
         </div>
-        <svg class="sparkline" id="right-spark" viewBox="0 0 240 28" preserveAspectRatio="none"></svg>
-        <div class="kpi-row">
-          <div class="kpi">
-            <div class="label" id="right-k1-label">total</div>
-            <div class="value" id="right-k1">—</div>
+        <svg class="sparkline" id="right-spark" viewBox="0 0 240 32" preserveAspectRatio="none"></svg>
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-label" id="right-k1-label">total</div>
+            <div class="stat-value" id="right-k1">—</div>
           </div>
-          <div class="kpi">
-            <div class="label">rows</div>
-            <div class="value" id="right-k2">—</div>
+          <div class="stat">
+            <div class="stat-label">rows</div>
+            <div class="stat-value" id="right-k2">—</div>
           </div>
-          <div class="kpi">
-            <div class="label">unique</div>
-            <div class="value" id="right-k3">—</div>
+          <div class="stat">
+            <div class="stat-label">unique</div>
+            <div class="stat-value" id="right-k3">—</div>
           </div>
         </div>
-        <div class="lb-header">
+        <div class="lb-head">
           <span style="text-align:right">#</span>
-          <span></span>
-          <span>name</span>
-          <span style="text-align:right" id="right-col-label">total</span>
+          <span>Name</span>
+          <span style="text-align:right" id="right-col-label">Total</span>
         </div>
-        <div class="lb" id="right-lb"></div>
+        <div id="right-lb"></div>
       </div>
     </div>
   </div>
 
-  <h2 id="benchmark">Speed proof · GPU vs JS Map vs DuckDB-WASM</h2>
-  <div class="card" id="bench-card" style="display:none">
-    <p class="muted" style="margin:0 0 10px;font-size:12.5px">
-      Same query (<code>SELECT k, SUM(v) GROUP BY k</code>) on synthetic data,
-      against three browser-native baselines. wgsql wins big when distinct
-      groups are large enough that a <code>Map</code> stops fitting in CPU L2 cache.
-    </p>
-    <div>
-      <label>n =</label>
+  <hr>
+
+  <h2 id="benchmark">Speed against DuckDB-WASM.</h2>
+  <p class="lead measure" style="font-size:1rem">
+    The same <code>GROUP BY</code>, this time as a fixed benchmark. JavaScript and DuckDB-WASM are
+    both in-tab, browser-native baselines. wgsql wins decisively above ~10⁵ distinct keys, where
+    a hash table no longer fits in CPU L2 cache. At low cardinality, the JS Map is hard to beat;
+    we say so on the page rather than hide the runs.
+  </p>
+  <div id="bench-card" style="display:none">
+    <div class="bench-controls">
+      <label>n</label>
       <select id="n">
-        <option value="100000">100 K</option>
-        <option value="1000000">1 M</option>
-        <option value="10000000" selected>10 M</option>
+        <option value="100000">100,000</option>
+        <option value="1000000">1,000,000</option>
+        <option value="10000000" selected>10,000,000</option>
       </select>
-      <label>distinct groups =</label>
+      <label>distinct groups</label>
       <select id="g">
-        <option value="1024">1 K</option>
-        <option value="100000">100 K</option>
-        <option value="1000000" selected>1 M</option>
+        <option value="1024">1,024</option>
+        <option value="100000">100,000</option>
+        <option value="1000000" selected>1,000,000</option>
       </select>
-      <button id="run">Run benchmark</button>
-      <label style="margin-left:14px"><input type="checkbox" id="compareDuck" checked> compare DuckDB-WASM</label>
+      <button id="run">Run</button>
+      <label style="margin-left:8px;color:var(--text-muted)">
+        <input type="checkbox" id="compareDuck" checked> include DuckDB-WASM
+      </label>
     </div>
-    <div id="results" style="display:none;margin-top:10px">
+    <div id="results" style="display:none">
       <table>
         <thead>
-          <tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr>
+          <tr><th>step</th><th class="numeric">time</th><th class="numeric">throughput</th></tr>
         </thead>
         <tbody id="results-body"></tbody>
       </table>
-      <div id="speedup" style="margin-top:8px"></div>
+      <p class="meta" id="speedup"></p>
     </div>
   </div>
 
-  <h2 id="parquet">Run on your own Parquet · file stays on your device</h2>
-  <div class="card">
-    <p class="muted" style="font-size:12.5px;margin:0 0 8px">
-      Drop a Parquet. We pick the first two integer columns (or you can name
-      them) and run the same GPU GROUP BY. Nothing is uploaded — the file is
-      parsed by DuckDB-WASM in this tab and handed to the GPU as Int32Arrays.
-    </p>
-    <div id="dropzone" style="
-      border: 1px dashed var(--border);
-      border-radius: 8px;
-      padding: 22px;
-      text-align: center;
-      color: var(--muted);
-      cursor: pointer;
-      margin: 8px 0;
-    ">
-      Drop a .parquet file here, or click to choose
-      <input type="file" id="fileInput" accept=".parquet" style="display:none">
-    </div>
-    <div style="font-size:12px;margin-top:6px">
-      <label>group key column:</label>
-      <input type="text" id="colK" placeholder="auto-detect" style="width:160px">
-      <label>value column:</label>
-      <input type="text" id="colV" placeholder="auto-detect" style="width:160px">
-      <button id="runFile" disabled class="ghost">load a file first</button>
-    </div>
-    <div id="fileResults" style="margin-top:8px"></div>
+  <h2 id="parquet">Run on your own Parquet.</h2>
+  <p class="lead measure" style="font-size:1rem">
+    Drop a file. The first two integer columns are picked automatically — or you can name them.
+    The file is parsed by DuckDB-WASM in this tab and handed to the GPU as <code>Int32Array</code>s.
+    Nothing is uploaded.
+  </p>
+  <div class="dropzone" id="dropzone">
+    Drop a <code>.parquet</code> file here, or click to choose
+    <input type="file" id="fileInput" accept=".parquet" style="display:none">
   </div>
+  <div class="bench-controls" style="margin-top:14px">
+    <label>group key</label>
+    <input type="text" id="colK" placeholder="auto-detect" style="width:160px">
+    <label>value</label>
+    <input type="text" id="colV" placeholder="auto-detect" style="width:160px">
+    <button id="runFile" disabled class="ghost">Load a file first</button>
+  </div>
+  <div id="fileResults" style="margin-top:8px"></div>
 
-  <h2>Log</h2>
-  <div class="card">
-    <pre id="log"></pre>
-  </div>
+  <h2>Log.</h2>
+  <pre id="log"></pre>
 </div>
 
 <script type="module" src="./demo.js"></script>

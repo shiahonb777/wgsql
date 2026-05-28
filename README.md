@@ -32,15 +32,15 @@ right stays interactive.
 
 Four scenarios share the same WGSL kernel — only the data changes:
 
-| Scenario           | Rows   | Distinct keys | What you do                       |
-|--------------------|-------:|--------------:|-----------------------------------|
-| 🚖 NYC taxi tips   | 10 M   | 250           | Filter by minimum fare            |
-| 📈 Equity trades   | 10 M   | 5 K           | Filter by minimum trade size      |
-| 🎮 Game telemetry  | 10 M   | 100 K         | Filter by minimum damage          |
-| 🛒 Ad clicks       | 10 M   | 1 M           | Filter by minimum click value     |
+| Scenario           | Rows   | Distinct keys | Top names look like                  |
+|--------------------|-------:|--------------:|--------------------------------------|
+| 🚖 NYC taxi tips   | 10 M   | 263           | Times Square, JFK, Williamsburg…     |
+| 📈 Equity trades   | 10 M   | 5 K           | AAPL, NVDA, MSFT, BRK.B…             |
+| 🎮 Game leaderboard| 10 M   | 50 K          | DragonSlayer42, ShadowMage_X…        |
+| 🛒 Product sales   | 10 M   | 1 K           | iPhone 15 Pro, AirPods Pro…          |
 
-The page also has a benchmark panel (GPU vs JS Map vs DuckDB-WASM) and
-a drag-drop Parquet box for your own files. Both run entirely in the
+There's also a benchmark panel (GPU vs JS Map vs DuckDB-WASM) and a
+drag-drop Parquet box for your own files. Both run entirely in the
 tab — nothing is uploaded.
 
 ## What this is for

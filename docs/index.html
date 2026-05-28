@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wgsql — JavaScript vs GPU, same slider, watch the lag pile up</title>
+<title>wgsql — JavaScript vs GPU, 10M rows, in your browser</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --surface: #181b22;
-    --surface-2: #20242d;
-    --text: #e8ebf2;
+    --bg: #0b0d12;
+    --surface: #14171f;
+    --surface-2: #1c2029;
+    --surface-3: #252a35;
+    --text: #f1f3f9;
     --muted: #9aa1ad;
     --dim: #6b7280;
     --accent: #6ab0ff;
@@ -19,7 +20,9 @@
     --bad:  #f87171;
     --border: #2a2f3a;
     --left:  #f87171;
+    --left-bg: rgba(248,113,113,0.08);
     --right: #4ade80;
+    --right-bg: rgba(74,222,128,0.08);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -29,36 +32,96 @@
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    padding: 20px 16px 64px;
+    padding: 20px 16px 80px;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; }
-  .hero { padding: 4px 0 12px; }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+
+  /* hero header */
+  .hero { padding: 6px 0 16px; }
   h1 {
-    font-size: 28px;
+    font-size: 32px;
     margin: 0 0 6px;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+  }
+  .h-grad {
     background: linear-gradient(90deg, var(--accent), var(--accent-2));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
-    display: inline-block;
   }
-  h1 + p { margin: 0 0 4px; color: var(--text); font-size: 16px; }
-  h1 + p + p { color: var(--muted); font-size: 13px; }
-  h2 {
-    font-size: 14px;
+  .subtitle { margin: 0 0 6px; color: var(--text); font-size: 17px; line-height: 1.4; }
+  .subtitle b { font-weight: 600; }
+  .subtitle .red { color: var(--left); }
+  .subtitle .green { color: var(--right); }
+  .meta-line { color: var(--muted); font-size: 13px; }
+  .meta-line a { color: var(--accent); text-decoration: none; }
+  .meta-line a:hover { text-decoration: underline; }
+
+  /* hero comparison strip */
+  .versus {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 16px;
+    align-items: center;
+    padding: 14px 18px;
+    background: linear-gradient(135deg, rgba(248,113,113,0.04), rgba(74,222,128,0.04));
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin: 12px 0 16px;
+  }
+  .versus-side { display: flex; align-items: center; gap: 14px; }
+  .versus-side.right { justify-content: flex-end; }
+  .versus-icon {
+    font-size: 22px;
+    width: 38px; height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 8px;
+  }
+  .versus-side.left  .versus-icon { background: var(--left-bg);  }
+  .versus-side.right .versus-icon { background: var(--right-bg); }
+  .versus-name { font-size: 13px; color: var(--muted); margin: 0 0 2px; }
+  .versus-stats { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .versus-side.left  .versus-stats { color: var(--left);  }
+  .versus-side.right .versus-stats { color: var(--right); }
+  .versus-stats .ms { font-size: 20px; }
+  .versus-stats .fps { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 6px; }
+  .versus-mid {
+    text-align: center;
+    padding: 0 8px;
+  }
+  .versus-mid .x {
+    font-size: 28px; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .versus-mid .x-label {
+    font-size: 10px;
     color: var(--muted);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
+    margin-top: 4px;
+  }
+
+  h2 {
+    font-size: 12.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
     font-weight: 600;
-    margin: 24px 0 8px;
+    margin: 22px 0 8px;
   }
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 14px;
-    margin: 10px 0;
+    margin: 8px 0;
   }
   button {
     background: var(--accent);
@@ -68,6 +131,13 @@
     padding: 8px 14px;
     font-weight: 600;
     cursor: pointer;
+    font-size: 13px;
+  }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: white;
+    padding: 9px 18px;
+    font-size: 13.5px;
   }
   button.ghost {
     background: var(--surface-2);
@@ -109,48 +179,44 @@
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; }
 
   /* scenario tabs */
   .tabs {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
-    margin: 4px 0 8px;
+    margin: 4px 0 4px;
   }
   .tab {
     background: var(--surface-2);
     color: var(--muted);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 14px;
+    border-radius: 8px;
+    padding: 9px 16px;
     cursor: pointer;
     font-size: 13.5px;
     transition: all 0.15s;
+    user-select: none;
   }
-  .tab:hover { color: var(--text); }
+  .tab:hover { color: var(--text); border-color: var(--surface-3); }
   .tab.active {
     color: var(--text);
-    background: linear-gradient(135deg, rgba(106,176,255,0.15), rgba(139,92,246,0.15));
+    background: linear-gradient(135deg, rgba(106,176,255,0.18), rgba(139,92,246,0.18));
     border-color: var(--accent);
   }
-  .tab .scenario-emoji { margin-right: 6px; font-size: 15px; }
-  .tab .scenario-meta { color: var(--dim); font-size: 11.5px; margin-left: 8px; }
+  .tab .tab-emoji { margin-right: 6px; font-size: 15px; }
+  .tab .tab-meta { color: var(--dim); font-size: 11.5px; margin-left: 8px; }
+  .tab.active .tab-meta { color: var(--muted); }
 
   /* shared slider */
-  .slider-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 16px;
-  }
   .slider-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto 1fr auto;
+    gap: 14px;
     align-items: center;
-    gap: 12px;
   }
   .slider-row input[type=range] {
-    flex: 1;
     accent-color: var(--accent);
     height: 6px;
   }
@@ -159,20 +225,30 @@
     background: var(--surface-2);
     color: var(--accent);
     border-radius: 999px;
-    padding: 3px 12px;
-    font-size: 12px;
+    padding: 4px 14px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     border: 1px solid var(--border);
-    min-width: 90px;
+    min-width: 80px;
     text-align: center;
+    font-weight: 500;
+  }
+  .controls-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    align-items: center;
+    flex-wrap: wrap;
   }
   .moves-counter {
     font-variant-numeric: tabular-nums;
     color: var(--muted);
-    font-size: 12px;
-    margin-top: 6px;
+    font-size: 12.5px;
+    margin-left: auto;
   }
-  .moves-counter b { color: var(--text); }
+  .moves-counter b { color: var(--text); font-weight: 600; }
+  .moves-counter .frames-l { color: var(--left); }
+  .moves-counter .frames-r { color: var(--right); }
 
   /* split panels */
   .split {
@@ -186,103 +262,215 @@
   .panel {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 14px;
     position: relative;
     overflow: hidden;
   }
-  .panel.left  { border-top: 3px solid var(--left);  }
-  .panel.right { border-top: 3px solid var(--right); }
+  .panel.left  { box-shadow: inset 0 2px 0 var(--left);  }
+  .panel.right { box-shadow: inset 0 2px 0 var(--right); }
   .panel-head {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
-  .panel-title {
-    font-size: 14px;
-    font-weight: 600;
+  .panel-title-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
+  .panel-icon {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .panel.left  .panel-icon { background: var(--left-bg); }
+  .panel.right .panel-icon { background: var(--right-bg); }
+  .panel-title { font-size: 14.5px; font-weight: 600; }
   .panel.left  .panel-title { color: var(--left); }
   .panel.right .panel-title { color: var(--right); }
-  .panel-sub { color: var(--muted); font-size: 12px; }
+  .panel-sub { color: var(--muted); font-size: 11.5px; }
+
+  .latency-strip {
+    background: var(--surface-2);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.2s;
+  }
+  .latency-strip.lag-warn {
+    background: rgba(248,113,113,0.14);
+    animation: pulseRed 1.2s ease-in-out infinite;
+  }
+  @keyframes pulseRed {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
+    50%      { box-shadow: 0 0 0 4px rgba(248,113,113,0.18); }
+  }
+  .latency-num {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .panel.left  .latency-num { color: var(--left); }
+  .panel.right .latency-num { color: var(--right); }
+  .latency-fps { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .stale-tag {
+    color: var(--bad); font-weight: 600; font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .live-tag {
+    color: var(--good); font-weight: 500; font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .live-dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--good);
+    margin-right: 4px;
+    box-shadow: 0 0 6px var(--good);
+    animation: liveDot 1.4s ease-in-out infinite;
+  }
+  @keyframes liveDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .sparkline {
+    width: 100%;
+    height: 28px;
+    margin-top: 8px;
+    margin-bottom: 8px;
+    display: block;
+  }
 
   .kpi-row {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
   .kpi {
     background: var(--surface-2);
-    border-radius: 6px;
-    padding: 8px 10px;
+    border-radius: 8px;
+    padding: 10px 12px;
   }
   .kpi .label {
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    margin-bottom: 3px;
   }
   .kpi .value {
-    font-size: 17px;
+    font-size: 18px;
     font-variant-numeric: tabular-nums;
-    margin-top: 2px;
     font-weight: 600;
     letter-spacing: -0.01em;
   }
 
-  .latency-bar {
-    background: var(--surface-2);
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 10px;
-    font-size: 12.5px;
-    font-variant-numeric: tabular-nums;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .latency-bar .lat-label { color: var(--muted); }
-  .latency-bar .lat-value { font-weight: 600; }
-  .latency-bar.lag-warn { background: rgba(248,113,113,0.12); }
-  .latency-bar .lag-counter { color: var(--bad); font-weight: 600; }
-
-  .bars { width: 100%; }
-  .bar {
+  /* leaderboard rows */
+  .lb-header {
     display: grid;
-    grid-template-columns: 90px 1fr 80px;
-    gap: 8px;
+    grid-template-columns: 26px 32px 1fr auto;
+    gap: 10px;
+    color: var(--dim);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0 4px 6px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+  .lb { width: 100%; }
+  .lb-row {
+    display: grid;
+    grid-template-columns: 26px 32px 1fr auto;
+    gap: 10px;
     align-items: center;
-    padding: 2.5px 0;
+    padding: 6px 4px;
+    border-radius: 6px;
     font-variant-numeric: tabular-nums;
+    transition: background 0.12s;
+  }
+  .lb-row:hover { background: var(--surface-2); }
+  .lb-rank {
+    color: var(--dim);
     font-size: 12px;
+    text-align: right;
   }
-  .bar .k { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bar .b {
-    height: 12px;
+  .lb-rank.top1 { color: #fbbf24; font-weight: 600; }
+  .lb-rank.top2 { color: #cbd5e1; font-weight: 600; }
+  .lb-rank.top3 { color: #d97706; font-weight: 600; }
+  .lb-avatar {
+    width: 28px; height: 28px;
+    background: var(--surface-3);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .lb-name {
+    min-width: 0;
+  }
+  .lb-name-main {
+    font-weight: 500;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lb-name-sub {
+    color: var(--muted);
+    font-size: 11.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lb-bar-cell {
+    display: flex; flex-direction: column; align-items: flex-end;
+    min-width: 110px;
+  }
+  .lb-bar-track {
+    height: 5px;
+    width: 110px;
+    background: var(--surface-3);
     border-radius: 3px;
-    transition: width 0.08s ease-out;
+    overflow: hidden;
+    margin-top: 4px;
   }
-  .panel.left  .bar .b { background: linear-gradient(90deg, var(--left), #fb7185); }
-  .panel.right .bar .b { background: linear-gradient(90deg, var(--right), #34d399); }
-  .bar .v { text-align: right; }
+  .lb-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.12s ease-out;
+  }
+  .panel.left  .lb-bar-fill { background: linear-gradient(90deg, var(--left), #fb7185); }
+  .panel.right .lb-bar-fill { background: linear-gradient(90deg, var(--right), #34d399); }
+  .lb-value {
+    font-weight: 600;
+    font-size: 13px;
+  }
 
-  .stale-overlay {
+  /* Stale shimmer overlay on left when computing */
+  .stale-shimmer {
     position: absolute;
     inset: 0;
-    background: rgba(15,17,21,0.45);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--bad);
-    font-size: 12.5px;
-    font-weight: 600;
     pointer-events: none;
+    background: linear-gradient(110deg,
+      transparent 30%,
+      rgba(248,113,113,0.06) 50%,
+      transparent 70%);
+    background-size: 200% 100%;
     opacity: 0;
     transition: opacity 0.2s;
   }
-  .stale-overlay.visible { opacity: 1; }
+  .stale-shimmer.visible { opacity: 1; animation: shimmer 1.6s linear infinite; }
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -100% 0; }
+  }
 
   .links { color: var(--muted); font-size: 13px; }
   .links a { margin-right: 14px; }
@@ -290,67 +478,95 @@
   .scenario-desc {
     color: var(--muted);
     font-size: 12.5px;
-    margin: 6px 0 0;
+    margin: 8px 0 6px;
   }
-
-  .winner-banner {
-    margin-top: 12px;
-    padding: 10px 14px;
-    background: linear-gradient(135deg, rgba(74,222,128,0.08), rgba(106,176,255,0.08));
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-  }
-  .winner-banner b { color: var(--right); font-size: 18px; }
 </style>
 </head>
 <body>
 <div class="wrap">
 
   <header class="hero">
-    <h1>wgsql</h1>
-    <p>Same data. Same query. Same slider. <b style="color:var(--left)">JavaScript Map</b>
-       in a Web Worker on the left, <b style="color:var(--right)">wgsql GPU</b>
-       on the right. Drag the slider — watch the lag pile up.</p>
-    <p>10 million rows, in your browser, on your GPU. ~388 KB wasm, no server, no upload.
-       <a href="https://github.com/shiahonb777/wgsql" target="_blank">GitHub</a> ·
-       <a href="#benchmark">Benchmark</a> ·
-       <a href="#parquet">Run on your file</a></p>
+    <h1>wgsql <span class="h-grad">— see your dashboard breathe</span></h1>
+    <p class="subtitle">
+      Same data. Same query. Same slider.
+      <b class="red">JavaScript Map in a Web Worker</b> on the left,
+      <b class="green">wgsql GPU</b> on the right. 10 million rows.
+    </p>
+    <p class="meta-line">
+      <a href="https://github.com/shiahonb777/wgsql" target="_blank">GitHub</a> ·
+      <a href="#benchmark">Benchmark vs DuckDB-WASM</a> ·
+      <a href="#parquet">Run on your file</a> ·
+      ~388 KB wasm · MIT
+    </p>
   </header>
+
+  <!-- Hero comparison strip — updates live -->
+  <div class="versus" id="versus" style="display:none">
+    <div class="versus-side left">
+      <div class="versus-icon">🐢</div>
+      <div>
+        <div class="versus-name">JavaScript Map · Web Worker</div>
+        <div class="versus-stats"><span class="ms" id="versus-l-ms">—</span><span class="fps" id="versus-l-fps">— FPS</span></div>
+      </div>
+    </div>
+    <div class="versus-mid">
+      <div class="x" id="versus-x">—×</div>
+      <div class="x-label">live speedup</div>
+    </div>
+    <div class="versus-side right">
+      <div>
+        <div class="versus-name" style="text-align:right">wgsql · WebGPU</div>
+        <div class="versus-stats"><span class="ms" id="versus-r-ms">—</span><span class="fps" id="versus-r-fps">— FPS</span></div>
+      </div>
+      <div class="versus-icon">⚡</div>
+    </div>
+  </div>
 
   <div class="card" id="boot-card">
     <div id="status">checking WebGPU support…</div>
   </div>
 
   <div id="dashboard" style="display:none">
-    <h2>Pick a scenario · all driven by the same WGSL kernel</h2>
+    <h2>Pick a scenario · same WGSL kernel, different data</h2>
     <div class="tabs" id="tabs"></div>
     <p class="scenario-desc" id="scenario-desc"></p>
 
-    <div class="slider-card" style="margin-top:10px">
+    <div class="card">
       <div class="slider-row">
         <label id="slider-label">slider</label>
         <span class="pill" id="slider-pill">—</span>
         <input type="range" id="slider" min="0" max="1000" step="1" value="0">
+        <button id="autodrag-btn" class="primary">▶ Auto-drag (5s)</button>
       </div>
-      <div class="moves-counter">
-        slider moved <b id="moves-count">0</b> times ·
-        <span style="color:var(--left)">left frames</span> done <b id="left-frames">0</b> ·
-        <span style="color:var(--right)">right frames</span> done <b id="right-frames">0</b>
+      <div class="controls-row">
+        <span class="moves-counter">
+          slider moved <b id="moves-count">0</b> times ·
+          <span class="frames-l">JS frames done <b id="left-frames">0</b></span> ·
+          <span class="frames-r">GPU frames done <b id="right-frames">0</b></span>
+        </span>
       </div>
     </div>
 
     <div class="split">
       <div class="panel left">
+        <div class="stale-shimmer" id="left-shimmer"></div>
         <div class="panel-head">
-          <div class="panel-title">JavaScript Map · Web Worker</div>
-          <div class="panel-sub" id="left-sub">CPU thread, never blocks UI</div>
+          <div class="panel-title-line">
+            <div class="panel-icon">🐢</div>
+            <div>
+              <div class="panel-title">JavaScript Map</div>
+              <div class="panel-sub">Web Worker · CPU thread, never blocks UI</div>
+            </div>
+          </div>
         </div>
-        <div class="latency-bar" id="left-latency">
-          <div><span class="lat-label">last frame</span> · <span class="lat-value" id="left-ms">—</span></div>
-          <div id="left-lag"></div>
+        <div class="latency-strip" id="left-latency">
+          <div>
+            <span class="latency-num" id="left-ms">—</span>
+            <span class="latency-fps" id="left-fps">— FPS</span>
+          </div>
+          <div id="left-tag"><span class="live-tag">— idle</span></div>
         </div>
+        <svg class="sparkline" id="left-spark" viewBox="0 0 240 28" preserveAspectRatio="none"></svg>
         <div class="kpi-row">
           <div class="kpi">
             <div class="label" id="left-k1-label">total</div>
@@ -361,22 +577,37 @@
             <div class="value" id="left-k2">—</div>
           </div>
           <div class="kpi">
-            <div class="label">groups</div>
+            <div class="label">unique</div>
             <div class="value" id="left-k3">—</div>
           </div>
         </div>
-        <div class="bars" id="left-bars"></div>
+        <div class="lb-header">
+          <span style="text-align:right">#</span>
+          <span></span>
+          <span>name</span>
+          <span style="text-align:right" id="left-col-label">total</span>
+        </div>
+        <div class="lb" id="left-lb"></div>
       </div>
 
       <div class="panel right">
         <div class="panel-head">
-          <div class="panel-title">wgsql · WebGPU</div>
-          <div class="panel-sub" id="right-sub">GPU compute, fused WHERE</div>
+          <div class="panel-title-line">
+            <div class="panel-icon">⚡</div>
+            <div>
+              <div class="panel-title">wgsql · WebGPU</div>
+              <div class="panel-sub">GPU compute · WHERE fused into the kernel</div>
+            </div>
+          </div>
         </div>
-        <div class="latency-bar" id="right-latency">
-          <div><span class="lat-label">last frame</span> · <span class="lat-value" id="right-ms">—</span></div>
-          <div id="right-lag"></div>
+        <div class="latency-strip" id="right-latency">
+          <div>
+            <span class="latency-num" id="right-ms">—</span>
+            <span class="latency-fps" id="right-fps">— FPS</span>
+          </div>
+          <div id="right-tag"><span class="live-tag">— idle</span></div>
         </div>
+        <svg class="sparkline" id="right-spark" viewBox="0 0 240 28" preserveAspectRatio="none"></svg>
         <div class="kpi-row">
           <div class="kpi">
             <div class="label" id="right-k1-label">total</div>
@@ -387,18 +618,18 @@
             <div class="value" id="right-k2">—</div>
           </div>
           <div class="kpi">
-            <div class="label">groups</div>
+            <div class="label">unique</div>
             <div class="value" id="right-k3">—</div>
           </div>
         </div>
-        <div class="bars" id="right-bars"></div>
+        <div class="lb-header">
+          <span style="text-align:right">#</span>
+          <span></span>
+          <span>name</span>
+          <span style="text-align:right" id="right-col-label">total</span>
+        </div>
+        <div class="lb" id="right-lb"></div>
       </div>
-    </div>
-
-    <div class="winner-banner" id="winner-banner" style="display:none">
-      <span class="muted">live speedup</span> &nbsp;
-      <b id="winner-x">—</b>
-      &nbsp; <span class="muted" id="winner-detail"></span>
     </div>
   </div>
 
@@ -445,7 +676,7 @@
     </p>
     <div id="dropzone" style="
       border: 1px dashed var(--border);
-      border-radius: 6px;
+      border-radius: 8px;
       padding: 22px;
       text-align: center;
       color: var(--muted);
@@ -471,702 +702,6 @@
   </div>
 </div>
 
-<script type="module">
-import init, { init as wgsqlInit } from "./wgsql_wasm.js";
-import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
-
-const $ = id => document.getElementById(id);
-const log = (line, cls = "") => {
-  const pre = $("log");
-  const el = document.createElement("span");
-  if (cls) el.className = cls;
-  el.textContent = line + "\n";
-  pre.appendChild(el);
-  pre.scrollTop = pre.scrollHeight;
-};
-
-const fmt = {
-  int: n => n.toLocaleString(),
-  money: n => "$" + (n >= 1e9 ? (n/1e9).toFixed(2) + "B"
-                  : n >= 1e6 ? (n/1e6).toFixed(2) + "M"
-                  : n >= 1e3 ? (n/1e3).toFixed(1) + "K"
-                  : n.toFixed(0)),
-  num: n => n >= 1e9 ? (n/1e9).toFixed(2) + "B"
-          : n >= 1e6 ? (n/1e6).toFixed(2) + "M"
-          : n >= 1e3 ? (n/1e3).toFixed(1) + "K"
-          : n.toFixed(0),
-  ms: n => n < 10 ? n.toFixed(1) + " ms"
-          : n < 1000 ? n.toFixed(0) + " ms"
-          : (n/1000).toFixed(2) + " s",
-};
-
-let engine = null;
-let duckConn = null;
-let duckdbReady = null;
-
-async function ensureDuckDB() {
-  if (duckConn) return;
-  if (duckdbReady) return duckdbReady;
-  duckdbReady = (async () => {
-    log("[duckdb] initializing (one-shot, ~1s)…");
-    const t = performance.now();
-    const bundles = duckdb.getJsDelivrBundles();
-    const bundle = await duckdb.selectBundle(bundles);
-    const worker = await duckdb.createWorker(bundle.mainWorker);
-    const logger = new duckdb.ConsoleLogger();
-    const db = new duckdb.AsyncDuckDB(logger, worker);
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-    duckConn = await db.connect();
-    log(`[duckdb] ready in ${(performance.now()-t).toFixed(0)} ms`);
-  })();
-  await duckdbReady;
-}
-
-async function duckDBGroupBy(keys, values) {
-  await duckConn.query(`DROP TABLE IF EXISTS t;`);
-  await duckConn.query(`CREATE TABLE t (k INTEGER, v INTEGER);`);
-
-  const tIngestStart = performance.now();
-  const enc = new TextEncoder();
-  const lines = ["k,v"];
-  for (let i = 0; i < keys.length; i++) lines.push(keys[i] + "," + values[i]);
-  const csv = enc.encode(lines.join("\n"));
-  await duckConn.bindings.registerFileBuffer("data.csv", csv);
-  await duckConn.query(`COPY t FROM 'data.csv' (HEADER, FORMAT 'csv');`);
-  const tIngest = performance.now() - tIngestStart;
-
-  const tQueryStart = performance.now();
-  const result = await duckConn.query(`
-    SELECT k, SUM(v) AS s FROM t GROUP BY k;
-  `);
-  const tQuery = performance.now() - tQueryStart;
-
-  return { totalMs: tIngest + tQuery, ingestMs: tIngest, queryMs: tQuery, rows: result.numRows };
-}
-
-async function boot() {
-  if (!("gpu" in navigator)) {
-    $("status").innerHTML =
-      "<span class='err'>This browser does not expose WebGPU. " +
-      "Try a recent Chrome, Edge, or Safari Technology Preview.</span>";
-    return;
-  }
-  $("status").textContent = "loading WASM module…";
-  await init();
-  log("[boot] wasm module loaded");
-  try {
-    engine = await wgsqlInit();
-  } catch (e) {
-    $("status").innerHTML =
-      "<span class='err'>Failed to initialize wgsql engine: " + e + "</span>";
-    return;
-  }
-  $("status").innerHTML =
-    "<span class='ok'>wgsql ready</span> on " +
-    "<code>" + engine.backend + "</code> / " +
-    "<code>" + engine.adapterName + "</code>";
-  $("bench-card").style.display = "block";
-  $("dashboard").style.display = "block";
-  log("[boot] backend=" + engine.backend + " adapter=" + engine.adapterName);
-
-  initScenarios();
-  await selectScenario(0);
-}
-
-// ---------- Scenarios ----------
-//
-// Each scenario is a self-contained dataset description: how to
-// generate the columns, what the slider filters, what the bars and
-// KPIs should display. The GPU kernel is always the same; only the
-// data and the labels change.
-
-const SCENARIOS = [
-  {
-    id: "taxi",
-    emoji: "🚖",
-    title: "NYC taxi tips",
-    meta: "10 M trips · 250 zones",
-    desc: "Drag to filter by minimum fare. Bars show top tipping pickup zones. " +
-          "What feels obvious — 'show me only large fares' — usually triggers a full table rescan.",
-    n: 10_000_000,
-    distinct: 250,
-    sliderLabel: "min fare ≥",
-    sliderMax: 80,
-    sliderUnit: "$",
-    keyName: "zone",
-    keyKind: "zone",
-    valueRange: 80,         // values 0..80 (fare in dollars)
-    sumLabel: "tips total",
-    sumKind: "money",
-  },
-  {
-    id: "stocks",
-    emoji: "📈",
-    title: "Equity trades",
-    meta: "10 M trades · 5 K tickers",
-    desc: "Drag to filter by minimum trade size. Bars show top tickers by traded notional. " +
-          "5 K distinct tickers — well past where a JS Map fits in cache.",
-    n: 10_000_000,
-    distinct: 5_000,
-    sliderLabel: "min trade size ≥",
-    sliderMax: 1000,
-    sliderUnit: "$",
-    keyName: "ticker",
-    keyKind: "ticker",
-    valueRange: 1000,
-    sumLabel: "notional",
-    sumKind: "money",
-  },
-  {
-    id: "game",
-    emoji: "🎮",
-    title: "Game telemetry",
-    meta: "10 M events · 100 K players",
-    desc: "Drag to filter by minimum damage dealt per event. Bars show top damage players. " +
-          "100 K distinct players × 10 M events is the regime where dashboards stop being interactive.",
-    n: 10_000_000,
-    distinct: 100_000,
-    sliderLabel: "min damage ≥",
-    sliderMax: 500,
-    sliderUnit: "",
-    keyName: "player",
-    keyKind: "player",
-    valueRange: 500,
-    sumLabel: "damage total",
-    sumKind: "num",
-  },
-  {
-    id: "ads",
-    emoji: "🛒",
-    title: "Ad clicks",
-    meta: "10 M events · 1 M users",
-    desc: "Drag to filter by minimum click value (cents). Bars show top users by spend. " +
-          "1 M distinct users is where the JS Map's hash table stops fitting anywhere useful.",
-    n: 10_000_000,
-    distinct: 1_000_000,
-    sliderLabel: "min click value ≥",
-    sliderMax: 200,
-    sliderUnit: "¢",
-    keyName: "user",
-    keyKind: "user",
-    valueRange: 200,
-    sumLabel: "spend total",
-    sumKind: "money",
-  },
-];
-
-let currentScenario = 0;
-let datasetKeys = null;     // Int32Array
-let datasetValues = null;   // Int32Array
-
-function initScenarios() {
-  const tabs = $("tabs");
-  for (let i = 0; i < SCENARIOS.length; i++) {
-    const s = SCENARIOS[i];
-    const tab = document.createElement("div");
-    tab.className = "tab" + (i === 0 ? " active" : "");
-    tab.dataset.idx = String(i);
-    tab.innerHTML = `<span class="scenario-emoji">${s.emoji}</span>` +
-                    `<span>${s.title}</span>` +
-                    `<span class="scenario-meta">${s.meta}</span>`;
-    tab.addEventListener("click", () => selectScenario(i));
-    tabs.appendChild(tab);
-  }
-}
-
-// xorshift32 deterministic generator with two independent streams.
-function generateScenarioData(scn) {
-  const n = scn.n;
-  const keys = new Int32Array(n);
-  const values = new Int32Array(n);
-  let x = 0x1234567 | 0;
-  let y = 0x76543210 | 0;
-  for (let i = 0; i < n; i++) {
-    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-    y ^= y << 13; y ^= y >>> 17; y ^= y << 5;
-    keys[i] = (x >>> 0) % scn.distinct;
-    values[i] = (y >>> 0) % scn.valueRange;
-  }
-  return { keys, values };
-}
-
-function formatKey(scn, k) {
-  switch (scn.keyKind) {
-    case "ticker": {
-      // Make a fake ticker like 'AAPL' from k.
-      const A = "A".charCodeAt(0);
-      const a = String.fromCharCode(A + (k % 26));
-      const b = String.fromCharCode(A + ((k / 26 | 0) % 26));
-      const c = String.fromCharCode(A + ((k / 676 | 0) % 26));
-      return a + b + c;
-    }
-    case "zone": return "zone " + k;
-    case "player": return "p" + k;
-    case "user": return "u" + k;
-    default: return String(k);
-  }
-}
-
-function formatSum(scn, n) {
-  return scn.sumKind === "money" ? fmt.money(n) : fmt.num(n);
-}
-
-// ---------- Driver: shared slider, two engines, accurate lag ----------
-
-const state = {
-  sliderValue: 0,
-  movesCount: 0,
-  leftFrames: 0,
-  rightFrames: 0,
-  // Per-side tracking of "what slider value did the most recent frame compute for?"
-  // The lag is movesCount minus the frame's slider value index... but simpler:
-  // we compare the frame's slider value to the latest user input. If they match,
-  // up-to-date; if not, lagging.
-  leftLatestSliderForFrame: null,
-  rightLatestSliderForFrame: null,
-  leftMs: 0,
-  rightMs: 0,
-  jsWorker: null,
-  // GPU loop control
-  gpuRunning: false,
-  gpuPendingValue: null,   // most recent slider value that hasn't been processed
-};
-
-let scenarioLoading = false;
-
-async function selectScenario(idx) {
-  if (scenarioLoading) return;
-  scenarioLoading = true;
-  for (const t of $("tabs").children) t.classList.remove("active");
-  $("tabs").children[idx].classList.add("active");
-
-  const scn = SCENARIOS[idx];
-  currentScenario = idx;
-  $("scenario-desc").textContent = scn.desc;
-  $("slider-label").textContent = scn.sliderLabel;
-  $("slider").max = String(scn.sliderMax);
-  $("slider").value = "0";
-  $("slider-pill").textContent =
-    (scn.sliderUnit === "$" ? "$" : scn.sliderUnit === "¢" ? "¢" : "") +
-    "0" +
-    (scn.sliderUnit && scn.sliderUnit !== "$" && scn.sliderUnit !== "¢" ? " " + scn.sliderUnit : "");
-  $("left-k1-label").textContent = scn.sumLabel;
-  $("right-k1-label").textContent = scn.sumLabel;
-  $("left-bars").innerHTML = "";
-  $("right-bars").innerHTML = "";
-
-  log(`[scn] loading "${scn.title}" (${fmt.int(scn.n)} rows × ${fmt.int(scn.distinct)} groups)`);
-
-  const t = performance.now();
-  const { keys, values } = generateScenarioData(scn);
-  log(`[scn] generated in ${(performance.now()-t).toFixed(0)} ms`);
-  datasetKeys = keys;
-  datasetValues = values;
-
-  // Reset counters for fair UX.
-  state.sliderValue = 0;
-  state.movesCount = 0;
-  state.leftFrames = 0;
-  state.rightFrames = 0;
-  state.leftLatestSliderForFrame = null;
-  state.rightLatestSliderForFrame = null;
-  state.leftMs = 0;
-  state.rightMs = 0;
-  state.gpuRunning = false;
-  state.gpuPendingValue = 0;
-  updateMoves();
-
-  // Hand a copy to the JS worker. We send a *copy* (not transferable)
-  // because we still need the data on the main thread for the GPU.
-  if (!state.jsWorker) {
-    state.jsWorker = new Worker(new URL("./js_worker.js", import.meta.url));
-    state.jsWorker.onmessage = onWorkerMessage;
-  }
-  state.jsWorker.postMessage({
-    type: "scenario",
-    keys: new Int32Array(keys),
-    values: new Int32Array(values),
-    sliderValue: 0,
-  });
-
-  // Run an initial GPU frame so the panel isn't empty.
-  state.gpuPendingValue = 0;
-  if (!state.gpuRunning) gpuLoop();
-
-  scenarioLoading = false;
-}
-
-function onWorkerMessage(e) {
-  const m = e.data;
-  if (m.type !== "result") return;
-  state.leftFrames += 1;
-  state.leftMs = m.ms;
-  state.leftLatestSliderForFrame = m.sliderValue;
-  renderPanel("left", m);
-  updateMoves();
-}
-
-async function gpuLoop() {
-  state.gpuRunning = true;
-  while (state.gpuPendingValue !== null) {
-    const sliderAtStart = state.gpuPendingValue;
-    state.gpuPendingValue = null;
-    const scn = SCENARIOS[currentScenario];
-    const filter = sliderAtStart > 0 ? { op: "ge", threshold: sliderAtStart } : null;
-    const t0 = performance.now();
-    const flat = await engine.aggI32(datasetKeys, datasetValues, scn.distinct, filter);
-    const ms = performance.now() - t0;
-    // Layout: per row [k, sum_lo, sum_hi, count_lo, count_hi, min, max]
-    const stride = 7;
-    const rowCount = flat.length / stride;
-    let totalSum = 0;
-    let totalCount = 0;
-    const rows = [];
-    for (let i = 0; i < rowCount; i++) {
-      const off = i * stride;
-      const sum = (flat[off+2] * 4294967296) + (flat[off+1] >>> 0);
-      const count = (flat[off+4] * 4294967296) + (flat[off+3] >>> 0);
-      rows.push({ key: flat[off], sum, count });
-      totalSum += sum;
-      totalCount += count;
-    }
-    rows.sort((a, b) => b.sum - a.sum);
-    state.rightFrames += 1;
-    state.rightMs = ms;
-    state.rightLatestSliderForFrame = sliderAtStart;
-    renderPanel("right", {
-      sliderValue: sliderAtStart,
-      totalSum,
-      totalCount,
-      distinct: rowCount,
-      top: rows.slice(0, 20),
-      ms,
-    });
-    updateMoves();
-    // Yield so input events drain.
-    await new Promise(r => setTimeout(r, 0));
-  }
-  state.gpuRunning = false;
-}
-
-function renderPanel(side, m) {
-  const scn = SCENARIOS[currentScenario];
-  $(`${side}-ms`).textContent = fmt.ms(m.ms);
-  $(`${side}-k1`).textContent = formatSum(scn, m.totalSum);
-  $(`${side}-k2`).textContent = fmt.int(m.totalCount);
-  $(`${side}-k3`).textContent = fmt.int(m.distinct);
-
-  const bars = $(`${side}-bars`);
-  bars.innerHTML = "";
-  const top = m.top;
-  const max = top.length > 0 ? top[0].sum : 1;
-  for (const r of top) {
-    const row = document.createElement("div");
-    row.className = "bar";
-    row.innerHTML =
-      `<span class="k">${formatKey(scn, r.key)}</span>` +
-      `<div><div class="b" style="width:${max > 0 ? (r.sum/max*100).toFixed(1) : 0}%"></div></div>` +
-      `<span class="v">${formatSum(scn, r.sum)}</span>`;
-    bars.appendChild(row);
-  }
-  if (top.length === 0) {
-    bars.innerHTML = `<div class="muted" style="padding:12px;text-align:center;font-size:12px">no rows match this filter</div>`;
-  }
-}
-
-function updateMoves() {
-  $("moves-count").textContent = String(state.movesCount);
-  $("left-frames").textContent = String(state.leftFrames);
-  $("right-frames").textContent = String(state.rightFrames);
-
-  // Lag = how far behind the latest user slider value the panel is.
-  const left = state.leftLatestSliderForFrame;
-  const right = state.rightLatestSliderForFrame;
-  const cur = state.sliderValue;
-
-  const leftLagged = left !== null && left !== cur;
-  const rightLagged = right !== null && right !== cur;
-
-  const leftLagEl = $("left-lag");
-  const rightLagEl = $("right-lag");
-  if (leftLagged) {
-    $("left-latency").classList.add("lag-warn");
-    leftLagEl.innerHTML = `<span class="lag-counter">stale · still computing</span>`;
-  } else {
-    $("left-latency").classList.remove("lag-warn");
-    leftLagEl.innerHTML = `<span class="ok" style="font-size:12px">live</span>`;
-  }
-  if (rightLagged) {
-    $("right-latency").classList.add("lag-warn");
-    rightLagEl.innerHTML = `<span class="lag-counter">stale</span>`;
-  } else {
-    $("right-latency").classList.remove("lag-warn");
-    rightLagEl.innerHTML = `<span class="ok" style="font-size:12px">live</span>`;
-  }
-
-  // Speedup banner.
-  if (state.leftMs > 0 && state.rightMs > 0) {
-    const x = state.leftMs / state.rightMs;
-    $("winner-banner").style.display = "block";
-    $("winner-x").textContent = x.toFixed(1) + "× faster";
-    $("winner-detail").textContent =
-      `(JS Map: ${fmt.ms(state.leftMs)} · wgsql GPU: ${fmt.ms(state.rightMs)} per frame)`;
-  }
-}
-
-// Hook the slider once.
-$("slider").addEventListener("input", e => {
-  const v = parseInt(e.target.value, 10);
-  state.sliderValue = v;
-  state.movesCount += 1;
-  const scn = SCENARIOS[currentScenario];
-  $("slider-pill").textContent =
-    (scn.sliderUnit === "$" ? "$" : scn.sliderUnit === "¢" ? "¢" : "") +
-    String(v) +
-    (scn.sliderUnit && scn.sliderUnit !== "$" && scn.sliderUnit !== "¢" ? " " + scn.sliderUnit : "");
-
-  // Tell the JS worker.
-  if (state.jsWorker) state.jsWorker.postMessage({ type: "setSlider", value: v });
-
-  // Schedule a GPU run for this slider value (the loop coalesces).
-  state.gpuPendingValue = v;
-  if (!state.gpuRunning) gpuLoop().catch(err => log("ERROR: " + err, "err"));
-
-  updateMoves();
-});
-
-// ---------- Benchmark panel (kept) ----------
-
-function makeData(n, gMod) {
-  const keys = new Int32Array(n);
-  const values = new Int32Array(n);
-  let x = 0xCAFEBABE | 0;
-  for (let i = 0; i < n; i++) {
-    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-    keys[i] = (x >>> 0) % gMod;
-    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-    values[i] = (x >>> 0) % 1000;
-  }
-  return { keys, values };
-}
-
-function jsBaselineMain(keys, values) {
-  const acc = new Map();
-  const n = keys.length;
-  for (let i = 0; i < n; i++) {
-    const k = keys[i];
-    acc.set(k, (acc.get(k) || 0) + values[i]);
-  }
-  return acc;
-}
-
-async function runBench() {
-  const n = parseInt($("n").value, 10);
-  const groups = parseInt($("g").value, 10);
-  $("run").disabled = true;
-  $("results").style.display = "none";
-
-  log(`[bench] n=${n.toLocaleString()} groups=${groups.toLocaleString()}`);
-
-  const t0 = performance.now();
-  const { keys, values } = makeData(n, groups);
-  const tGen = performance.now() - t0;
-  log(`  gen        ${tGen.toFixed(1)} ms`);
-
-  const t1 = performance.now();
-  const cpuMap = jsBaselineMain(keys, values);
-  const tCpu = performance.now() - t1;
-
-  const t2 = performance.now();
-  const flat = await engine.groupBySumI32(keys, values, groups);
-  const tGpu = performance.now() - t2;
-
-  let duckRow = "";
-  let speedupVsDuck = null;
-  if ($("compareDuck").checked) {
-    try {
-      await ensureDuckDB();
-      const dr = await duckDBGroupBy(keys, values);
-      log(`  duckdb     ${dr.totalMs.toFixed(1)} ms (ingest ${dr.ingestMs.toFixed(0)} + query ${dr.queryMs.toFixed(0)})`);
-      duckRow = `<tr><td>DuckDB-WASM (CSV ingest + GROUP BY)</td>` +
-                `<td class="num">${dr.totalMs.toFixed(1)} ms</td>` +
-                `<td class="num">${(n / dr.totalMs / 1000).toFixed(1)} M rows/s</td></tr>`;
-      speedupVsDuck = dr.totalMs / tGpu;
-    } catch (e) {
-      log(`  duckdb     ERROR: ${e}`, "err");
-      duckRow = `<tr><td>DuckDB-WASM</td><td class="num err" colspan="2">init failed: ${e}</td></tr>`;
-    }
-  }
-
-  const gpuRows = flat.length / 3;
-  let matches = 0, checked = 0;
-  for (let i = 0; i < flat.length && checked < Math.min(50, gpuRows); i += 3) {
-    const k = flat[i];
-    const lo = flat[i+1] >>> 0;
-    const hi = flat[i+2];
-    const gpuSum = hi * 4294967296 + lo;
-    const cpuSum = cpuMap.get(k);
-    if (cpuSum !== undefined && Math.abs(gpuSum - cpuSum) < 1) matches++;
-    checked++;
-  }
-  const correctness = (matches === checked && cpuMap.size === gpuRows)
-    ? `<span class='ok'>OK</span> (${gpuRows} groups, ${matches}/${checked} sums match)`
-    : `<span class='err'>MISMATCH</span> (gpu ${gpuRows} groups vs cpu ${cpuMap.size}, ${matches}/${checked} sums match)`;
-
-  $("results-body").innerHTML = `
-    <tr><td>data generation</td><td class="num">${tGen.toFixed(1)} ms</td><td class="num muted">— host</td></tr>
-    <tr><td>JS baseline (Map)</td><td class="num">${tCpu.toFixed(1)} ms</td><td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
-    ${duckRow}
-    <tr><td><strong>wgsql GPU</strong></td><td class="num"><strong>${tGpu.toFixed(1)} ms</strong></td><td class="num"><strong>${(n / tGpu / 1000).toFixed(1)} M rows/s</strong></td></tr>
-  `;
-  const speedup = tCpu / tGpu;
-  const cls = speedup >= 1 ? "ok" : "warn";
-  let speedupHtml = `<strong class="${cls}">${speedup.toFixed(2)}× </strong> GPU vs JS Map.`;
-  if (speedupVsDuck != null) {
-    const cls2 = speedupVsDuck >= 1 ? "ok" : "warn";
-    speedupHtml += `&nbsp; <strong class="${cls2}">${speedupVsDuck.toFixed(2)}×</strong> GPU vs DuckDB-WASM.`;
-  }
-  speedupHtml += `&nbsp; ${correctness}`;
-  $("speedup").innerHTML = speedupHtml;
-  $("results").style.display = "block";
-
-  log(`  cpu        ${tCpu.toFixed(1)} ms (${(n/tCpu/1000).toFixed(1)} M rows/s)`);
-  log(`  gpu        ${tGpu.toFixed(1)} ms (${(n/tGpu/1000).toFixed(1)} M rows/s)`);
-  log(`  speedup    ${speedup.toFixed(2)}x vs Map` + (speedupVsDuck != null ? `, ${speedupVsDuck.toFixed(2)}x vs DuckDB-WASM` : ""));
-
-  $("run").disabled = false;
-}
-
-$("run").addEventListener("click", () => { runBench().catch(e => log("ERROR: " + e, "err")); });
-
-// ---------- Parquet upload (kept) ----------
-
-let loadedParquet = null;
-
-async function loadParquetFile(file) {
-  log(`[file] reading ${file.name} (${(file.size/1e6).toFixed(1)} MB)`);
-  const buf = new Uint8Array(await file.arrayBuffer());
-  await ensureDuckDB();
-
-  await duckConn.bindings.registerFileBuffer(file.name, buf);
-  const schema = await duckConn.query(`DESCRIBE SELECT * FROM '${file.name}' LIMIT 0;`);
-  const intCols = [];
-  for (let i = 0; i < schema.numRows; i++) {
-    const name = schema.getChild("column_name").get(i);
-    const type = schema.getChild("column_type").get(i);
-    if (/^(INT|BIGINT|SMALLINT|TINYINT|UINTEGER|UBIGINT)/.test(type)) intCols.push(name);
-  }
-  if (intCols.length < 2) {
-    throw new Error(`need at least 2 integer columns; saw [${intCols.join(", ")}]`);
-  }
-
-  const kCol = $("colK").value.trim() || intCols[0];
-  const vCol = $("colV").value.trim() || intCols[1];
-  $("colK").placeholder = intCols[0];
-  $("colV").placeholder = intCols[1];
-
-  log(`[file] columns: ${kCol}, ${vCol}`);
-  const t = performance.now();
-  const result = await duckConn.query(
-    `SELECT CAST(${kCol} AS INTEGER) k, CAST(${vCol} AS INTEGER) v FROM '${file.name}';`
-  );
-  const tParse = performance.now() - t;
-  log(`[file] parsed in ${tParse.toFixed(0)} ms (${result.numRows.toLocaleString()} rows)`);
-
-  const n = result.numRows;
-  const keys = new Int32Array(n);
-  const values = new Int32Array(n);
-  const kArr = result.getChild("k");
-  const vArr = result.getChild("v");
-  for (let i = 0; i < n; i++) {
-    keys[i] = kArr.get(i);
-    values[i] = vArr.get(i);
-  }
-
-  loadedParquet = { keys, values, kCol, vCol, fileName: file.name };
-  $("runFile").disabled = false;
-  $("runFile").classList.remove("ghost");
-  $("runFile").textContent = `Run on ${file.name}`;
-  $("fileResults").innerHTML = `
-    <div class="muted" style="font-size:12px">
-      ready: ${n.toLocaleString()} rows, columns
-      <code>${kCol}</code> + <code>${vCol}</code>
-    </div>
-  `;
-}
-
-async function runFileBench() {
-  if (!loadedParquet) return;
-  $("runFile").disabled = true;
-  const { keys, values, kCol, vCol, fileName } = loadedParquet;
-  const n = keys.length;
-
-  const sample = new Set();
-  const sampleN = Math.min(n, 50_000);
-  for (let i = 0; i < sampleN; i++) sample.add(keys[i]);
-  const groupHint = Math.max(64, sample.size * Math.ceil(n / sampleN) | 0);
-  log(`[fileRun] estimated distinct ≈ ${groupHint.toLocaleString()}`);
-
-  const t1 = performance.now();
-  const cpu = jsBaselineMain(keys, values);
-  const tCpu = performance.now() - t1;
-
-  const t2 = performance.now();
-  const flat = await engine.groupBySumI32(keys, values, groupHint);
-  const tGpu = performance.now() - t2;
-
-  const gpuRows = flat.length / 3;
-  const speedup = tCpu / tGpu;
-  const cls = speedup >= 1 ? "ok" : "warn";
-  $("fileResults").innerHTML = `
-    <table>
-      <thead><tr><th>step</th><th class="num">time</th><th class="num">throughput</th></tr></thead>
-      <tbody>
-        <tr><td>JS Map (${cpu.size.toLocaleString()} groups)</td>
-            <td class="num">${tCpu.toFixed(1)} ms</td>
-            <td class="num">${(n / tCpu / 1000).toFixed(1)} M rows/s</td></tr>
-        <tr><td><strong>wgsql GPU (${gpuRows.toLocaleString()} groups)</strong></td>
-            <td class="num"><strong>${tGpu.toFixed(1)} ms</strong></td>
-            <td class="num"><strong>${(n / tGpu / 1000).toFixed(1)} M rows/s</strong></td></tr>
-      </tbody>
-    </table>
-    <div style="margin-top:8px">
-      <strong class="${cls}">${speedup.toFixed(2)}× </strong> GPU vs JS Map on ${fileName}
-      (<code>${n.toLocaleString()}</code> rows, group key = <code>${kCol}</code>)
-    </div>
-  `;
-  log(`[fileRun] cpu ${tCpu.toFixed(0)} ms, gpu ${tGpu.toFixed(0)} ms, speedup ${speedup.toFixed(2)}x`);
-  $("runFile").disabled = false;
-}
-
-const dz = $("dropzone");
-dz.addEventListener("click", () => $("fileInput").click());
-dz.addEventListener("dragover", e => { e.preventDefault(); dz.style.borderColor = "var(--accent)"; });
-dz.addEventListener("dragleave", e => { e.preventDefault(); dz.style.borderColor = "var(--border)"; });
-dz.addEventListener("drop", async e => {
-  e.preventDefault();
-  dz.style.borderColor = "var(--border)";
-  const f = e.dataTransfer.files[0];
-  if (f) {
-    try { await loadParquetFile(f); }
-    catch (err) { log("ERROR: " + err, "err"); $("fileResults").innerHTML = `<span class='err'>${err}</span>`; }
-  }
-});
-$("fileInput").addEventListener("change", async e => {
-  const f = e.target.files[0];
-  if (f) {
-    try { await loadParquetFile(f); }
-    catch (err) { log("ERROR: " + err, "err"); $("fileResults").innerHTML = `<span class='err'>${err}</span>`; }
-  }
-});
-$("runFile").addEventListener("click", () => {
-  runFileBench().catch(e => log("ERROR: " + e, "err"));
-});
-
-boot().catch(e => {
-  $("status").innerHTML = "<span class='err'>Boot failed: " + e + "</span>";
-  log("ERROR: " + e, "err");
-});
-</script>
+<script type="module" src="./demo.js"></script>
 </body>
 </html>
